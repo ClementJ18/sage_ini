@@ -1,0 +1,109 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sage_ini"
+version = "0.1.0"
+description = "A typed, comment-preserving parser and linter for SAGE-engine (BFME) ini files."
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [
+    { name = "Clement Julia", email = "clement.julia13@gmail.com" },
+]
+keywords = ["sage", "bfme", "ini", "parser", "linter", "modding"]
+classifiers = [
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Games/Entertainment",
+]
+dependencies = [
+    "regex",
+]
+
+[project.urls]
+Repository = "https://github.com/ClementJ18/ini_parser"
+
+[project.scripts]
+sage-lint = "sage_lint.cli:main"
+sage-ini = "sage_ini.__main__:main"
+
+[project.optional-dependencies]
+ui = [
+    "PyQt6>=6.6",
+    "pybig>=0.6",
+    "pillow>=10",  
+    "pyinstaller>=6",
+]
+
+lint-ui = [
+    "PyQt6>=6.6",
+    "pyinstaller>=6",  
+]
+
+wiki = [
+    "mwclient>=0.11", 
+    "mwparserfromhell>=0.7", 
+    "PyQt6>=6.6", 
+    "pybig>=0.6",
+    "keyring>=24",
+]
+
+map = [
+    "sagemap>=0.8.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+include = ["sage_ini*", "sage_lint*", "sage_map*", "sage_utils*", "sage_wiki*", "sage_ui*"]
+
+[tool.setuptools.package-data]
+sage_ini = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "full: part of the full suite (corpus gates + peripheral packages); run with --full",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = [
+    "data", # game-data corpus
+]
+
+[tool.ruff.lint]
+select = [
+    "E",       # pycodestyle errors (E722: no bare `except:`)
+    "W",       # pycodestyle warnings
+    "F",       # pyflakes
+    "I",       # isort - deterministic import order
+    "B",       # bugbear (B009/B010: no getattr/setattr with constant attribute names)
+    "UP",      # pyupgrade
+    "BLE",     # blind-except: no `except Exception:` swallowing
+    "PLC0415", # all imports at module top level; no function-local imports
+]
+
+[tool.ruff.lint.per-file-ignores]
+"sage_ini/model/behaviors.py" = ["F821"]
+"sage_ini/model/nuggets.py" = ["F821"]
+"sage_ini/model/data_blocks.py" = ["F821"]
+
+[tool.ruff.format]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["sage_ini", "sage_map"]
+disable_error_code = ["annotation-unchecked"]
+
+[[tool.mypy.overrides]]
+module = "sagemap.*"
+ignore_missing_imports = true

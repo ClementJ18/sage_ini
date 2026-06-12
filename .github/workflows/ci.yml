@@ -1,0 +1,41 @@
+name: CI
+
+# Runs on every PR and on pushes to the default branch. Mirrors the pre-commit
+# hooks: Ruff lint, Ruff format check, Mypy typing coverage, and the fast core test suite.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .            # the package + its runtime dep (regex)
+          pip install ruff==0.13.2 pytest mypy==2.1.0  # pinned ruff matches .pre-commit-config.yaml
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format
+        run: ruff format --check .
+
+      - name: Mypy typing coverage
+        run: mypy
+
+      - name: Core test suite
+        run: pytest -q

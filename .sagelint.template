@@ -1,0 +1,157 @@
+# .sagelint — shared, committed lint config for a mod.
+#
+# Copy this file to the root of the folder you lint and rename it to `.sagelint`:
+#   cp .sagelint.template <mod-root>/.sagelint
+# The `sage_lint lint <root>` command reads it (so the CLI, the Sublime plugin and CI
+# all behave identically). Format is TOML.
+#
+# All keys are optional. A `.sagelint.local` (gitignored) overlays this file per-key,
+# and explicit CLI flags override both. Unknown keys and bad values are reported as
+# warnings, never raised — a typo degrades to a message, not a crash.
+#
+# Run `sage_lint lint --list-codes` to print every code accepted by `ignore`/`select`.
+
+# -- root -------------------------------------------------------------------
+# The folder to lint, resolved relative to THIS file's directory. With it set you can
+# run `sage_lint lint` (no path) from here and it lints that folder. A path given on the
+# command line LOCATES this config (the dir to read `.sagelint` from) and `root` then
+# scopes the build to a subfolder of it — so an editor pointed at the project root still
+# lints just this subtree. Single path string.
+# root = "data/ini"
+
+# -- level ------------------------------------------------------------------
+# Minimum severity to report: "ERROR" | "WARNING" | "INFO". Mirrors --level.
+level = "WARNING"
+
+# -- format -----------------------------------------------------------------
+# Options for the `format` command (the lint keys above do not affect it).
+# align_equals pads attribute names so their `=` line up in a column, per
+# blank-line-delimited group within each block (mirrors --align-equals).
+# align_exclude lists block types to leave unaligned, by header keyword
+# (Object, ArmorSet, Draw) or module subtype (ActiveBody) — mirrors --align-exclude.
+# align_equals = true
+# align_exclude = ["ArmorSet"]
+
+# -- baseline ---------------------------------------------------------------
+# Path (relative to THIS file) to a baseline of *accepted* diagnostics: a snapshot of the
+# problems that already exist, so the linter can go into CI now and report only what is NEW
+# while the backlog is fixed over time. Mirrors --baseline. When unset, a `.sagelint.baseline`
+# beside this file is picked up automatically if present.
+#
+# Generate or refresh it with `sage_lint lint --write-baseline`, and COMMIT it (unlike
+# .sagelint.local) — it is the shared, checkout-independent record. Matching ignores line
+# numbers (file + code + message + count), so editing files does not resurface old problems.
+# baseline = ".sagelint.baseline"
+
+# -- ignore -----------------------------------------------------------------
+# Diagnostic codes to omit from the report (mirrors --ignore). String or list.
+# An ignored code is never reported or auto-fixed, and wins over `select`.
+ignore = [
+    # "unknown-attribute",    # every untyped field (ERROR); uncomment to mute the coverage backlog
+    # "reference-case",       # a cross-reference that matched only by ignoring case
+    # "enum-case",            # an enum token that matched only by ignoring case
+    # "ignored-trailing-tokens",
+]
+
+# -- select -----------------------------------------------------------------
+# Report ONLY these codes (the inverse of `ignore`); only the selected rules run.
+# `ignore` still subtracts from the selection. Omit the key entirely to run all.
+# select = ["dangling-reference", "duplicate-definition"]
+
+# -- maps -------------------------------------------------------------------
+# Also lint the binary `.map` layouts against the assembled game, so a map that
+# references an object/upgrade/etc. you have since removed is caught (mirrors
+# --maps). Off by default: parsing every map adds time, and needs the [map]
+# extra installed. The map checks use the map-dangling-* codes.
+# maps = true
+
+# -- maps_base --------------------------------------------------------------
+# Extra base sources loaded ONLY when `maps` is on (mirrors --maps-base): the
+# base-game data the map checks resolve object/upgrade references against, so a
+# base-game object placed on a map is not reported missing. Same form as `base`
+# (folder or .big, highest priority first); usually machine-specific, so prefer
+# `.sagelint.local`.
+# maps_base = [
+#     "C:/Games/BFME2/ini.big",
+# ]
+
+# -- assets -----------------------------------------------------------------
+# Run the opt-in missing-texture-file / missing-model-file / missing-map-file
+# rules (off by default; mirrors --assets). They check that a referenced
+# texture, model or map exists on disk — but a base-game asset lives in the
+# base archives, so unless you load your unmodified BFME2/RotWK data they report
+# every base reference as missing. Load your bases (see `base` / `assets_base`
+# below), then:
+# assets = true
+
+# -- assets_base ------------------------------------------------------------
+# Extra base sources loaded ONLY when `assets` is on (mirrors --assets-base):
+# the large texture/model .big archives the missing-file rules need but nothing
+# else does, so a plain run never pays to load them. Same form as `base`
+# (folder or .big, highest priority first); usually machine-specific, so prefer
+# `.sagelint.local`.
+# assets_base = [
+#     "C:/Games/BFME2/textures2.big",
+#     "C:/Games/BFME2/textures3.big",
+# ]
+
+# -- exclude ----------------------------------------------------------------
+# Directories omitted from the REPORT; their files still build the game so that
+# cross-file references resolve (mirrors --exclude). String or list of paths;
+# relative paths resolve against the lint root (the folder being built).
+#
+# NOTE: map.ini files (under a `maps/` directory) are excluded from the global
+# build but linted on the side, each in its own context against the global game.
+# Excluding `maps` here turns that off (and skips the per-map build cost); remove
+# it to surface map.ini problems such as `map-bare-module`.
+exclude = [
+    "maps",
+    # "_vendor",
+]
+
+# -- base -------------------------------------------------------------------
+# Lower-priority base-game sources (a folder or a .big archive) loaded beneath
+# the mod: build-only, file-shadowed by the mod, and never reported (mirrors
+# --base). Highest priority first. Applied to whole-folder lint/fix only, not
+# the per-file save path. These paths are usually machine-specific — prefer
+# setting them in `.sagelint.local` instead of here.
+base = [
+    # "C:/Games/BFME2/data",
+    # "C:/Games/BFME2/lotr.big",
+]
+
+# -----------------------------------------------------------------------------
+# Valid codes for `ignore` / `select`
+#
+#   Rule codes:
+#     dangling-reference        a gameplay cross-reference (OCL, object, ...) the game never declares
+#     duplicate-definition      the same (kind, name) defined twice in one file
+#     invalid-module-operation  an AddModule/ReplaceModule/RemoveModule whose tag is wrong vs inheritance
+#     map-bare-module           a module declared bare in a map.ini (must use AddModule/ReplaceModule)
+#     out-of-range              a numeric field outside its allowed range
+#     repeated-field            a scalar attribute set more than once (last wins)
+#     respawn-entry-order       RespawnUpdate entries not in ascending level order
+#     respawn-unknown-level     a respawn entry for a rank the object cannot reach
+#     spurious-block-label      a block written `Block = Tag` whose header takes no `=` (engine ignores it)
+#     undefined-macro           an arithmetic operand naming a missing #define macro
+#     unknown-attribute         an attribute the block's schema does not declare (ERROR, exhaustive)
+#     unrecognized-block        a module/block kind the schema does not model (ERROR, exhaustive)
+#     unknown-string-label      a Label naming a string the string table lacks
+#
+#   Non-rule codes (parser / loader / conversion):
+#     conversion-error          a value failed to convert (bad number, dangling ref, bad macro)
+#     enum-case                 an enum token matched only by ignoring case
+#     reference-case            a cross-reference matched a definition only by ignoring case
+#     extra-header-tokens       a definition header had tokens past the name
+#     ignored-trailing-tokens   a scalar reference had extra trailing tokens
+#     repeated-flag-field       a whole-set flag field (e.g. KindOf) set twice
+#     stray-end                 an `End` with no open block
+#     unclosed-block            a block opened but never closed by `End`
+#     unclosed-script           a `BeginScript` with no matching `EndScript`
+#     unresolved-include        an `#include` target could not be found
+#     include-cycle             an `#include` chain refers back to itself
+#     malformed-define          a `#define` directive that could not be parsed
+#     malformed-include         an `#include` directive that could not be parsed
+#     unknown-directive         an unrecognized `#` directive
+#     load-error                a file failed to build into the game
+#     rule-error                a lint rule raised while running (internal)

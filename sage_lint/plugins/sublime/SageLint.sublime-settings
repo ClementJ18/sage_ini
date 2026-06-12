@@ -1,0 +1,28 @@
+{
+    // Python interpreter used to run sage_lint. Use an absolute path (or a venv's python)
+    // if "python" is not the right one on your PATH.
+    "python": "python",
+
+    // The ini_parser checkout root, i.e. the folder `python -m sage_lint` must run from.
+    // Leave empty to auto-detect when this plugin runs from inside the checkout; set it to
+    // an absolute path when the plugin is copied into Sublime's Packages directory.
+    "linter_cwd": "",
+
+    // File extensions that trigger linting on save.
+    "extensions": [".ini", ".inc", ".bhav"],
+
+    // Lint rules — severity level, ignored/selected codes, excluded dirs and base-game
+    // sources — are NOT configured here. They belong to the mod being linted: put them in a
+    // `.sagelint` (shared, committable) and `.sagelint.local` (gitignored, machine paths)
+    // file in the linted folder. The sage_lint CLI reads them, so the plugin, the CLI and
+    // CI all behave the same. See the README for the format.
+
+    // Reformat the buffer in sage_lint's canonical style on every save (before writing).
+    "format_on_save": false,
+
+    // Re-lint the live buffer shortly after you stop typing, not only on save.
+    "lint_on_idle": true,
+
+    // Idle delay before an on-idle lint fires, in milliseconds.
+    "idle_delay_ms": 800
+}

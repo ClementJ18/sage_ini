@@ -1,0 +1,72 @@
+[
+    {
+        "caption": "SAGE Lint: Lint Folder",
+        "command": "sage_lint_folder"
+    },
+    {
+        "caption": "SAGE Lint: About",
+        "command": "sage_lint_about"
+    },
+    {
+        "caption": "SAGE Lint: Format File",
+        "command": "sage_lint_format"
+    },
+    {
+        "caption": "SAGE Lint: Fix File (auto-fixable)",
+        "command": "sage_lint_fix",
+        "args": {"scope": "file"}
+    },
+    {
+        "caption": "SAGE Lint: Fix Folder (auto-fixable)",
+        "command": "sage_lint_fix",
+        "args": {"scope": "folder"}
+    },
+    {
+        "caption": "SAGE Lint: Show Diagnostics (Project)",
+        "command": "sage_lint_show_diagnostics",
+        "args": {"current_file_only": false}
+    },
+    {
+        "caption": "SAGE Lint: Show Diagnostics (Current File)",
+        "command": "sage_lint_show_diagnostics",
+        "args": {"current_file_only": true}
+    },
+    {
+        "caption": "SAGE Lint: Copy Message (Current Line)",
+        "command": "sage_lint_copy_message"
+    },
+    {
+        "caption": "SAGE Lint: Next Diagnostic",
+        "command": "sage_lint_goto",
+        "args": {"forward": true}
+    },
+    {
+        "caption": "SAGE Lint: Previous Diagnostic",
+        "command": "sage_lint_goto",
+        "args": {"forward": false}
+    },
+    {
+        "caption": "SAGE Lint: Go to Definition",
+        "command": "sage_lint_goto_definition"
+    },
+    {
+        "caption": "SAGE Lint: Browse Symbols",
+        "command": "sage_lint_browse_symbols"
+    },
+    {
+        "caption": "SAGE Lint: Show Module Documentation",
+        "command": "sage_lint_module_doc"
+    },
+    {
+        "caption": "SAGE Lint: Symbols in File",
+        "command": "sage_lint_file_symbols"
+    },
+    {
+        "caption": "SAGE Lint: Referenced Symbols",
+        "command": "sage_lint_referenced_symbols"
+    },
+    {
+        "caption": "SAGE Lint: Edit Macro Values",
+        "command": "sage_lint_edit_define"
+    }
+]

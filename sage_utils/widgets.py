@@ -1,0 +1,348 @@
+"""PyQt6 UI building blocks shared by the SAGE front ends, so the desktop apps don't
+duplicate them: a card frame, a background worker thread, bundled-resource lookup, a
+name completer, and the collapsible data-sources panel."""
+
+import sys
+import traceback
+from pathlib import Path
+
+from PyQt6.QtCore import QStringListModel, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QIcon, QImage, QPixmap
+from PyQt6.QtWidgets import (
+    QWIDGETSIZE_MAX,
+    QApplication,
+    QCompleter,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from sage_utils.config import read_json, write_json
+from sage_utils.styles import DARK_STYLE, LIGHT_STYLE
+
+# The theme preference is shared across every SAGE front end, so it lives under one key
+# rather than per app — toggle dark/light in one and the others open the same way.
+_THEME_APP = "sage_utils"
+_THEME_FILE = "theme.json"
+
+
+def saved_dark_theme(default: bool = True) -> bool:
+    """The remembered theme choice (True = dark), defaulting to dark when none is saved."""
+    data = read_json(_THEME_APP, _THEME_FILE, {})
+    value = data.get("dark") if isinstance(data, dict) else None
+    return value if isinstance(value, bool) else default
+
+
+def apply_theme(dark: bool, *, persist: bool = True) -> None:
+    """Repaint the running application in the shared dark or light theme, and (by default)
+    remember the choice for next launch. A no-op before a QApplication exists."""
+    app = QApplication.instance()
+    if app is not None:
+        app.setStyleSheet(DARK_STYLE if dark else LIGHT_STYLE)
+    if persist:
+        write_json(_THEME_APP, _THEME_FILE, {"dark": bool(dark)})
+
+
+class ThemeToggle(QPushButton):
+    """A checkable toolbar button that flips the app between the shared dark and light themes
+    and remembers the choice. Drop it into any SAGE front end; it reflects the saved state on
+    construction (the theme itself is applied by `run_app` at boot)."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setChecked(saved_dark_theme())
+        self.toggled.connect(self._on_toggled)
+        self._sync_label()
+
+    def _on_toggled(self, dark: bool) -> None:
+        apply_theme(dark)
+        self._sync_label()
+
+    def _sync_label(self) -> None:
+        self.setText("☾ Dark" if self.isChecked() else "☀ Light")
+
+
+class CopyableLabel(QLabel):
+    """A QLabel whose text the user can select with the mouse and copy. Mouse-only
+    selection keeps labels out of the tab-focus order."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+
+def card(title: str | None = None, *, spacing: int = 8) -> tuple[QFrame, QVBoxLayout]:
+    """A styled `#card` frame and its vertical layout. `title`, if given, adds an
+    uppercase `#h2` heading."""
+    frame = QFrame()
+    frame.setObjectName("card")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(16, 14, 16, 14)
+    layout.setSpacing(spacing)
+    if title is not None:
+        head = CopyableLabel(title.upper())
+        head.setObjectName("h2")
+        layout.addWidget(head)
+    return frame, layout
+
+
+def pil_to_pixmap(picture) -> QPixmap:
+    """A QPixmap copy of a Pillow image (kept RGBA so transparency survives)."""
+    picture = picture.convert("RGBA")
+    data = picture.tobytes("raw", "RGBA")
+    image = QImage(data, picture.width, picture.height, QImage.Format.Format_RGBA8888)
+    return QPixmap.fromImage(image.copy())  # copy() detaches from the temp buffer
+
+
+def resource_path(name: str, anchor: str) -> Path:
+    """Path to a bundled resource, working in both a dev run and a PyInstaller one-file
+    exe (which unpacks under `sys._MEIPASS`). `anchor` is the app module's `__file__`."""
+    base = Path(getattr(sys, "_MEIPASS", Path(anchor).resolve().parent))
+    return base / name
+
+
+def run_app(window_factory, *, icon_file: str, anchor: str, app_name: str | None = None) -> None:
+    """Boot a QApplication with the shared dark theme and bundled window icon, show the
+    window `window_factory()` builds, and run the event loop until exit. `anchor` is the app
+    module's `__file__` (for `resource_path`); `app_name`, if given, sets the application name."""
+    app = QApplication(sys.argv)
+    if app_name is not None:
+        app.setApplicationName(app_name)
+    app.setWindowIcon(QIcon(str(resource_path(icon_file, anchor))))
+    apply_theme(saved_dark_theme(), persist=False)  # last chosen theme, dark by default
+    window = window_factory()
+    window.show()
+    sys.exit(app.exec())
+
+
+def make_completer(parent, *, model=None, names=None, on_pick=None) -> QCompleter:
+    """A case-insensitive, substring-matching completer over object names. Pass a shared
+    `model` or a `names` list; `on_pick`, if given, fires when a suggestion is activated."""
+    completer = QCompleter(parent)
+    if model is not None:
+        completer.setModel(model)
+    elif names is not None:
+        completer.setModel(QStringListModel(list(names), parent))
+    completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+    if on_pick is not None:
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.activated.connect(on_pick)
+    return completer
+
+
+class Worker(QThread):
+    """Runs one callable off the UI thread, emitting its result or an error string. Pass
+    `self.progress.emit` into the callable as a thread-safe way to report status."""
+
+    done = pyqtSignal(object)
+    failed = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, fn) -> None:
+        super().__init__()
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            result = self._fn()
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.done.emit(result)
+
+
+def run_worker(owner, fn, on_done, on_failed=None) -> Worker:
+    """Run `fn` on a background `Worker`, wiring `on_done`/`on_failed` to its result/error
+    signals. A strong reference is kept on `owner._workers` (created on first use) so the
+    QThread isn't garbage-collected mid-run, and dropped when the work finishes. Returns the
+    started worker for callers that need to wire extra signals (e.g. `progress`)."""
+    workers = getattr(owner, "_workers", None)
+    if workers is None:
+        workers = set()
+        owner._workers = workers
+    worker = Worker(fn)
+
+    def cleanup() -> None:
+        workers.discard(worker)
+
+    worker.done.connect(on_done)
+    worker.done.connect(cleanup)
+    if on_failed is not None:
+        worker.failed.connect(on_failed)
+    worker.failed.connect(cleanup)
+    workers.add(worker)
+    worker.start()
+    return worker
+
+
+class SourcesPanel(QFrame):
+    """Collapsible data-sources card: an ordered list of `(kind, path)` sources with
+    add/remove/reorder controls and a Load button. Sources load top to bottom (later
+    overrides earlier). Emits `load_requested` on Load; the host reads `sources()`.
+    Emits `collapsed_changed(bool)` whenever it collapses or expands, so a host can move a
+    parent splitter's handle to match the new size."""
+
+    load_requested = pyqtSignal()
+    collapsed_changed = pyqtSignal(bool)
+
+    def __init__(
+        self,
+        *,
+        title: str = "SOURCES",
+        expanded_hint: str | None = None,
+        item_label=None,
+        list_min_height: int | None = None,
+        list_max_height: int | None = None,
+        show_status: bool = False,
+    ) -> None:
+        super().__init__()
+        self.setObjectName("card")
+        self._title = title
+        self._expanded_hint = expanded_hint
+        self._item_label = item_label or (lambda kind, path: f"[{kind}]  {path}")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(8)
+
+        self.header = QPushButton()
+        self.header.setObjectName("sectionHeader")
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header.clicked.connect(self._toggle)  # header doubles as a collapse toggle
+        outer.addWidget(self.header)
+
+        self.body = QWidget()
+        # Transparent (scoped by object name so it doesn't cascade onto child buttons)
+        # so the card surface shows behind the controls, not the dark window background.
+        self.body.setObjectName("sourcesBody")
+        self.body.setStyleSheet("QWidget#sourcesBody { background: transparent; }")
+        body = QVBoxLayout(self.body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(8)
+
+        self.source_list = QListWidget()
+        self.source_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        # Clear the viewport's inherited dark window background so the card shows through.
+        self.source_list.viewport().setStyleSheet("background: transparent;")
+        if list_min_height is not None:
+            self.source_list.setMinimumHeight(list_min_height)
+        if list_max_height is not None:
+            self.source_list.setMaximumHeight(list_max_height)
+        body.addWidget(self.source_list)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        for label, slot in (
+            ("Add folder…", self._add_folder),
+            ("Add .big…", self._add_big),
+            ("Remove", self._remove_source),
+            ("↑", lambda: self._move(-1)),
+            ("↓", lambda: self._move(1)),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(slot)
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        self.load_button = QPushButton("Load")
+        self.load_button.setObjectName("primary")
+        self.load_button.clicked.connect(self.load_requested.emit)
+        buttons.addWidget(self.load_button)
+        body.addLayout(buttons)
+
+        outer.addWidget(self.body)
+
+        self.status: QLabel | None = None
+        if show_status:
+            self.status = QLabel("")
+            self.status.setObjectName("muted")
+            outer.addWidget(self.status)
+
+        self._update_header()
+
+    def add_source(self, kind: str, path: str) -> None:
+        item = QListWidgetItem(self._item_label(kind, path))
+        item.setData(Qt.ItemDataRole.UserRole, (kind, path))
+        self.source_list.addItem(item)
+        self._update_header()
+
+    def clear(self) -> None:
+        """Drop every source, leaving the list empty."""
+        self.source_list.clear()
+        self._update_header()
+
+    def sources(self) -> list[tuple[str, str]]:
+        return [
+            self.source_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self.source_list.count())
+        ]
+
+    def count(self) -> int:
+        return self.source_list.count()
+
+    def prompt_add_folder(self) -> None:
+        """Open the folder picker and add the chosen folder. Public so an onboarding host can
+        offer the same action its own buttons do."""
+        path = QFileDialog.getExistingDirectory(self, "Add a data folder")
+        if path:
+            self.add_source("folder", path)
+
+    def prompt_add_big(self) -> None:
+        """Open the .big picker and add the chosen archive (see `prompt_add_folder`)."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Add a .big archive", "", "BIG archives (*.big)"
+        )
+        if path:
+            self.add_source("big", path)
+
+    # The toolbar buttons keep their private-method wiring; both now delegate to the public
+    # prompts so the onboarding state and the panel share one add path.
+    def _add_folder(self) -> None:
+        self.prompt_add_folder()
+
+    def _add_big(self) -> None:
+        self.prompt_add_big()
+
+    def _remove_source(self) -> None:
+        for item in self.source_list.selectedItems():
+            self.source_list.takeItem(self.source_list.row(item))
+        self._update_header()
+
+    def _move(self, delta: int) -> None:
+        """Move the selected source up (delta -1) or down (delta +1) one place."""
+        row = self.source_list.currentRow()
+        target = row + delta
+        if 0 <= row and 0 <= target < self.source_list.count():
+            item = self.source_list.takeItem(row)
+            self.source_list.insertItem(target, item)
+            self.source_list.setCurrentRow(target)
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self.body.setVisible(not collapsed)
+        # Cap the height to the header when collapsed so a parent QSplitter shrinks the pane
+        # to just the title rather than leaving the old (now empty) space; lift the cap when
+        # expanded so it can grow back. A no-op for a panel laid out in a plain box.
+        self.setMaximumHeight(self.sizeHint().height() if collapsed else QWIDGETSIZE_MAX)
+        self._update_header()
+        self.collapsed_changed.emit(collapsed)
+
+    def _toggle(self) -> None:
+        self.set_collapsed(self.body.isVisible())
+
+    def _update_header(self) -> None:
+        # `isHidden()` reflects the visibility flag even before show, so the arrow
+        # is correct at construction.
+        expanded = not self.body.isHidden()
+        arrow = "▾" if expanded else "▸"
+        if expanded and self._expanded_hint:
+            self.header.setText(f"{arrow}  {self._expanded_hint}")
+        else:
+            self.header.setText(f"{arrow}  {self._title} ({self.count()})")

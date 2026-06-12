@@ -9,6 +9,8 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+# Standalone sage_lint binary copied into the Sublime package (built per-OS, not committed).
+sage_lint/plugins/sublime/bin/
 develop-eggs/
 dist/
 downloads/
@@ -31,7 +33,6 @@ MANIFEST
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
-*.spec
 
 # Installer logs
 pip-log.txt
@@ -125,6 +126,7 @@ dmypy.json
 .pyre/
 
 data
+.claude/settings.local.json
 parser.sublime-project
 parser.sublime-workspace
 test.py
@@ -136,3 +138,10 @@ current_issues.txt
 *.ini
 ini-parser.sublime-project
 ini-parser.sublime-workspace
+pages
+OpenSAGE-master
+
+# Test fixtures are real ini/txt files that must be tracked despite the global
+# `*.ini`/`*.txt` ignores above (the `data/` corpus stays ignored).
+!tests/fixtures/
+!tests/fixtures/**

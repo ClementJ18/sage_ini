@@ -1,0 +1,21 @@
+[
+    { "caption": "Sage Lint: Go to Definition", "command": "sage_lint_goto_definition" },
+    { "caption": "Sage Lint: Browse Symbols", "command": "sage_lint_browse_symbols" },
+    {
+        "caption": "Sage Lint",
+        "children":
+        [
+            { "caption": "Show Module Documentation", "command": "sage_lint_module_doc" },
+            { "caption": "Edit Macro Values", "command": "sage_lint_edit_define" },
+            { "caption": "-" },
+            { "caption": "Symbols in File", "command": "sage_lint_file_symbols" },
+            { "caption": "Referenced Symbols", "command": "sage_lint_referenced_symbols" },
+            { "caption": "-" },
+            { "caption": "Lint Folder", "command": "sage_lint_folder" },
+            { "caption": "Format File", "command": "sage_lint_format" },
+            { "caption": "Fix File", "command": "sage_lint_fix", "args": {"scope": "file"} },
+            { "caption": "Show Diagnostics", "command": "sage_lint_show_diagnostics", "args": {"current_file_only": true} },
+            { "caption": "Copy Message (Current Line)", "command": "sage_lint_copy_message" }
+        ]
+    }
+]

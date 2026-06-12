@@ -1,0 +1,28 @@
+default_language_version:
+  python: python3.13
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.13.2
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (sage_ini typing coverage)
+        entry: python -m mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      - id: core-tests
+        name: core test suite (pytest)
+        entry: python -m pytest -q
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true

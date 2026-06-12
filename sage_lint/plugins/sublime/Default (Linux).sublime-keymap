@@ -1,0 +1,35 @@
+[
+    // Window-wide.
+    { "keys": ["ctrl+alt+l"], "command": "sage_lint_folder" },
+    {
+        "keys": ["ctrl+alt+d"],
+        "command": "sage_lint_show_diagnostics",
+        "args": {"current_file_only": false}
+    },
+
+    // Scoped to ini source files so they don't shadow keys elsewhere. If your .inc/.bhav
+    // files are not highlighted as `source.ini`, use the Command Palette or widen the scope.
+    {
+        "keys": ["ctrl+alt+f"],
+        "command": "sage_lint_format",
+        "context": [{"key": "selector", "operator": "equal", "operand": "source.ini"}]
+    },
+    {
+        "keys": ["ctrl+alt+x"],
+        "command": "sage_lint_fix",
+        "args": {"scope": "file"},
+        "context": [{"key": "selector", "operator": "equal", "operand": "source.ini"}]
+    },
+    {
+        "keys": ["f8"],
+        "command": "sage_lint_goto",
+        "args": {"forward": true},
+        "context": [{"key": "selector", "operator": "equal", "operand": "source.ini"}]
+    },
+    {
+        "keys": ["shift+f8"],
+        "command": "sage_lint_goto",
+        "args": {"forward": false},
+        "context": [{"key": "selector", "operator": "equal", "operand": "source.ini"}]
+    }
+]

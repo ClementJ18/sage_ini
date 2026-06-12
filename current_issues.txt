@@ -1,7 +1,0 @@
-There are currently a lot of data in Objects that I really don't care about but sadly if I don't parse it, it'll trip up the system because it'll suddenly come accross a END statement for one of the blocks I don't parse and the parser will think it's the end of the object. 
-
-I also can't rely on the tabs as they are not consistent.
-
-
-TEST
-ProductionQueueHordeContain
