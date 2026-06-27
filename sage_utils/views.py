@@ -893,6 +893,81 @@ def command_buttons_view(game, command_set) -> list[dict]:
     ]
 
 
+def command_set_buttons(game, command_set) -> list[tuple[int, str, object]]:
+    """`(slot, button_name, CommandButton)` for each *loaded* slot of a CommandSet, in slot
+    order — the lean view that hands back the typed button so a caller can read its `Command`,
+    `Object`, `Options`, … . Slots whose button isn't loaded are dropped (the hero-recruit
+    index counts only resolvable buttons)."""
+    table = game.commandbuttons
+    return [
+        (slot, name, table[name]) for slot, name in _command_set_slots(command_set) if name in table
+    ]
+
+
+def faction_for_side(game, side):
+    """The playable `PlayerTemplate` whose `Side` is `side`, or None. A faction's `Side` ties
+    its structures, foundations and start flags back to it (the same token a `CastleBehavior`'s
+    `CastleToUnpackForFaction` and a building's `Side` field use)."""
+    if side is None:
+        return None
+    for faction in game.factions.values():
+        if not _safe(lambda f=faction: f.PlayableSide):
+            continue
+        other = faction._fields.get("Side")
+        if other is not None and str(other[-1] if isinstance(other, list) else other) == str(side):
+            return faction
+    return None
+
+
+def building_faction(game, obj):
+    """The playable faction a building belongs to — matched on its `Side` field — or None."""
+    raw = obj._fields.get("Side")
+    side = str(raw[-1] if isinstance(raw, list) else raw) if raw else None
+    return faction_for_side(game, side)
+
+
+def revive_order(faction) -> list[str]:
+    """A faction's heroes in REVIVE-slot order — its ring heroes then its regular buildable
+    heroes, raw and in declaration order. The `CreateAHero`/`RingHeroDummy` placeholders are
+    kept so each entry's index lines up with a command set's revive slots."""
+    order: list[str] = []
+    for field in ("BuildableRingHeroesMP", "BuildableHeroesMP"):
+        order.extend(_upgrade_names(faction._fields.get(field)))
+    return order
+
+
+def recruited_hero_names(game, obj) -> list[str]:
+    """The hero object names a building recruits. Its REVIVE buttons are enumerated in slot order
+    and mapped by position to the faction's `revive_order`; every REVIVE button advances the
+    index, but a hero is only recruited when its button lacks the `NEED_UPGRADE` option (the rest
+    are locked behind a tech). Placeholders are dropped; de-duplicated across the building's
+    command sets, in first-recruited order."""
+    faction = building_faction(game, obj)
+    if faction is None:
+        return []
+    order = revive_order(faction)
+    if not order:
+        return []
+    recruited: list[str] = []
+    for set_name in command_set_names(obj):
+        command_set = game.commandsets.get(set_name)
+        if command_set is None:
+            continue
+        index = 0
+        for _slot, _button_name, button in command_set_buttons(game, command_set):
+            if getattr(_safe(lambda b=button: b.Command), "name", None) != "REVIVE":
+                continue
+            hero = order[index] if index < len(order) else None
+            index += 1
+            if hero is None or hero in _HERO_PLACEHOLDERS or hero in recruited:
+                continue
+            options = _safe(lambda b=button: b.Options, []) or []
+            if any(getattr(o, "name", str(o)) == "NEED_UPGRADE" for o in options):
+                continue
+            recruited.append(hero)
+    return recruited
+
+
 def _mapped_images(value) -> list:
     """The croppable `MappedImage` definitions in a resolved `Image` field value, always
     as a list. Unresolved names (raw strings) and a missing field yield nothing."""

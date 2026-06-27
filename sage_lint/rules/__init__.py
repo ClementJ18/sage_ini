@@ -9,7 +9,11 @@ from sage_lint.rules.assets import (
 from sage_lint.rules.base import RULES, Rule, run_rules
 from sage_lint.rules.commandbutton import RedundantNullificationRule
 from sage_lint.rules.commandset import CommandSetButtonRule
-from sage_lint.rules.definitions import DuplicateDefinitionRule
+from sage_lint.rules.definitions import (
+    DuplicateDefinitionRule,
+    UnusedDefinitionRule,
+    UnusedObjectRule,
+)
 from sage_lint.rules.macros import UndefinedMacroRule
 from sage_lint.rules.map_ini import MapBareModuleRule
 from sage_lint.rules.module_ops import ModuleOperationRule
@@ -49,5 +53,7 @@ __all__ = [
     "UnknownAttributeRule",
     "UnrecognizedBlockRule",
     "UnknownStringLabelRule",
+    "UnusedDefinitionRule",
+    "UnusedObjectRule",
     "run_rules",
 ]

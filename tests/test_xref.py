@@ -6,7 +6,7 @@ import pytest
 
 from sage_ini.loader import load_game
 from sage_ini.model.game import Game
-from sage_ini.model.xref import Xref
+from sage_ini.model.xref import Xref, referenceable_keys
 from sage_ini.parser.blockparser import parse
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -72,6 +72,25 @@ class TestXref:
         xref = Xref(game)
         button = game.commandbuttons["Command_Bar"]
         assert button not in xref.references(button)
+
+    def test_for_game_caches_one_graph(self):
+        game = _load(self._BUTTON)
+        first = Xref.for_game(game)
+        assert Xref.for_game(game) is first  # reused, not rebuilt
+
+
+class TestReferenceableKeys:
+    def test_includes_a_referenced_kind(self):
+        # CommandButton.Upgrade is a typed reference to the upgrades table.
+        assert "upgrades" in referenceable_keys()
+
+    def test_excludes_an_entry_point_kind(self):
+        # Nothing in the data references the game-data singleton by name.
+        assert "gamedatas" not in referenceable_keys()
+
+    def test_is_schema_derived_and_game_independent(self):
+        # The answer does not depend on what a particular game happens to load.
+        assert referenceable_keys() == referenceable_keys()
 
 
 @pytest.mark.full

@@ -9,7 +9,7 @@ import pytest
 
 from sage_ini.parser.diagnostics import Diagnostic, Severity
 from sage_ini.parser.location import Span
-from sage_lint.cli import _base_paths, main
+from sage_lint.cli import _base_paths, _resolve_rule_set, main
 from sage_lint.config import Config
 from sage_lint.fixer import fix_diagnostics
 from sage_lint.formatter import format_file, format_text
@@ -956,6 +956,24 @@ class TestAssetRulesOptIn:
         (tmp_path / ".sagelint").write_text("assets = true\n", encoding="utf-8")
         assert main(["lint", str(tmp_path)]) == 1
         assert "missing-texture-file" in capsys.readouterr().out
+
+
+class TestRuleSetResolution:
+    """`--assets` turns on the asset-group opt-in rules, but a non-asset opt-in rule
+    (unused-object) stays off unless named in `--select`."""
+
+    def _codes(self, rules):
+        return {rule.code for rule in (rules if rules is not None else [])}
+
+    def test_assets_adds_only_the_asset_group(self):
+        codes = self._codes(_resolve_rule_set(set(), include_assets=True))
+        assert "missing-texture-file" in codes
+        assert "unused-object" not in codes  # opt-in, but not part of the asset group
+        assert "unused-definition" in codes  # on by default
+
+    def test_select_can_still_name_unused_object(self):
+        codes = self._codes(_resolve_rule_set({"unused-object"}, include_assets=True))
+        assert codes == {"unused-object"}
 
 
 class TestBaseBigIndexing:

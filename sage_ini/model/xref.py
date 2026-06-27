@@ -10,13 +10,65 @@ from collections import defaultdict
 from collections.abc import Iterator
 
 from sage_ini.model.game import Game
-from sage_ini.model.objects import IniObject
+from sage_ini.model.objects import REGISTRY, IniObject, resolve_annotation
+from sage_ini.model.types import KeyedRecord, Reference
 from sage_ini.walk import walk_objects
 
-__all__ = ["Xref"]
+__all__ = ["Xref", "referenceable_keys"]
 
 # Converted values that hold no reference and must not be descended into.
 _SCALAR = (str, bytes, bool, int, float, enum.Enum)
+
+
+def _collect_keys(converter, keys: set[str], seen: set[int]) -> None:
+    """Add every Game table key `converter` (or anything nested in it) can reference. Mirrors
+    the converter shapes `references.py::_iter_refs` walks: a `Reference` names its target table,
+    a field typed directly as a definition class names that class's table, and the list/tuple/
+    nullable wrappers and `KeyedRecord` keys are descended. A definition class is an endpoint —
+    its own fields are visited when `REGISTRY` reaches that class, so descent stops there (which
+    also breaks the forward-reference cycle a class field back to its own type would form)."""
+    if converter is None or id(converter) in seen:
+        return
+    seen.add(id(converter))
+    if isinstance(converter, Reference):
+        keys.add(converter.key)
+        return
+    if isinstance(converter, type) and issubclass(converter, KeyedRecord):
+        for annotation in converter._keyspec.values():
+            _resolve_into(annotation, keys, seen)
+        return
+    if isinstance(converter, type) and issubclass(converter, IniObject):
+        if converter.key:
+            keys.add(converter.key)
+        return
+    for attr in ("element", "inner"):
+        nested = getattr(converter, attr, None)
+        if nested is not None:
+            _resolve_into(nested, keys, seen)
+    for annotation in getattr(converter, "element_types", None) or ():
+        _resolve_into(annotation, keys, seen)
+
+
+def _resolve_into(annotation, keys: set[str], seen: set[int]) -> None:
+    """Resolve one field annotation to its converter and fold its reference keys in."""
+    try:
+        _collect_keys(resolve_annotation(annotation), keys, seen)
+    except (KeyError, TypeError):
+        pass  # a name with no registered class is not a reference target
+
+
+def referenceable_keys() -> frozenset[str]:
+    """Every Game table key some typed field can point at — a `Reference`'s target table, or the
+    table of a field typed directly as a definition class. A definition whose *kind* never appears
+    here is an engine entry point that nothing in the data names (a faction, the game data, a
+    terrain): the engine loads it directly, so an unused-definition check cannot judge it and must
+    skip it. A kind that does appear is a genuine reference target whose unreferenced members are
+    worth flagging. Schema-derived, so the answer is the same for any loaded game."""
+    keys: set[str] = set()
+    for cls in REGISTRY.values():
+        for annotation in getattr(cls, "_fieldspec", {}).values():
+            _resolve_into(annotation, keys, set())
+    return frozenset(keys)
 
 
 def _registered(game: Game, obj: IniObject) -> bool:
@@ -57,6 +109,18 @@ class Xref:
         self._forward: dict[IniObject, set[IniObject]] = defaultdict(set)
         self._reverse: dict[IniObject, set[IniObject]] = defaultdict(set)
         self._build()
+
+    @classmethod
+    def for_game(cls, game: Game) -> "Xref":
+        """The graph for `game`, built once and cached on it. Several rules ask the same game
+        what references what; building the whole graph per rule would walk it repeatedly, so the
+        first caller builds it and the rest reuse it. The cache lives for the game's lifetime —
+        each lint run assembles a fresh game, so there is nothing stale to invalidate."""
+        cached = game.__dict__.get("_xref")
+        if cached is None:
+            cached = cls(game)
+            game.__dict__["_xref"] = cached
+        return cached
 
     def _build(self) -> None:
         for table in self.game.tables.values():

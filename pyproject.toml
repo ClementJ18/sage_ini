@@ -27,6 +27,7 @@ Repository = "https://github.com/ClementJ18/ini_parser"
 [project.scripts]
 sage-lint = "sage_lint.cli:main"
 sage-ini = "sage_ini.__main__:main"
+sage-edain = "sage_edain.__main__:main"
 
 [project.optional-dependencies]
 ui = [
@@ -53,6 +54,10 @@ map = [
     "sagemap>=0.8.1",
 ]
 
+edain = [
+    "sagemap>=0.8.1",
+]
+
 [dependency-groups]
 dev = [
     "pytest",
@@ -61,10 +66,11 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["sage_ini*", "sage_lint*", "sage_map*", "sage_utils*", "sage_wiki*", "sage_ui*"]
+include = ["sage_ini*", "sage_lint*", "sage_map*", "sage_utils*", "sage_wiki*", "sage_ui*", "sage_edain*"]
 
 [tool.setuptools.package-data]
 sage_ini = ["py.typed", "skill_assets/**/*"]
+sage_edain = ["ui/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -101,9 +107,15 @@ select = [
 
 [tool.mypy]
 python_version = "3.13"
-files = ["sage_ini", "sage_map"]
+files = ["sage_ini", "sage_map", "sage_edain"]
 disable_error_code = ["annotation-unchecked"]
 
 [[tool.mypy.overrides]]
 module = "sagemap.*"
 ignore_missing_imports = true
+
+# sage_utils is a peripheral package outside the type-checked set; sage_edain imports its read
+# helpers, so mypy follows it but should not gate on its (pre-existing) annotation gaps.
+[[tool.mypy.overrides]]
+module = "sage_utils.*"
+ignore_errors = true

@@ -554,10 +554,13 @@ def _rule_summary(rule: type) -> str:
 def _diagnostic_catalog() -> list[tuple[str, dict[str, str]]]:
     """The `--ignore`/`--select`-able codes, grouped by source (rule codes read live). Opt-in
     rules (skipped by a plain run) are flagged so a reader knows to enable them with --assets."""
-    rules = {
-        rule.code: _rule_summary(rule) + ("" if rule.default else "  [opt-in: --assets]")
-        for rule in RULES
-    }
+
+    def _opt_in(rule: type) -> str:
+        if rule.default:
+            return ""
+        return "  [opt-in: --assets]" if rule.assets else "  [opt-in: --select]"
+
+    rules = {rule.code: _rule_summary(rule) + _opt_in(rule) for rule in RULES}
     return [("rules", rules), ("parser / loader / conversion", _NONRULE_CODES)]
 
 
@@ -582,12 +585,13 @@ def _selected_rules(selected: set[str]) -> list[type] | None:
 
 def _resolve_rule_set(selected: set[str], include_assets: bool) -> list[type] | None:
     """The rules a run executes. An explicit `--select` wins (opt-in rules run when named). With
-    no selection, `--assets` (or config `assets`) adds the opt-in missing-file rules to the
-    default set; otherwise None lets `run_rules` use the plain default set."""
+    no selection, `--assets` (or config `assets`) adds the asset-group opt-in rules to the default
+    set; otherwise None lets `run_rules` use the plain default set. A non-asset opt-in rule (e.g.
+    unused-object) is never pulled in by `--assets` — only naming it in `--select` runs it."""
     if selected:
         return _selected_rules(selected)
     if include_assets:
-        return list(RULES)  # the default set plus the opt-in (asset) rules
+        return [rule for rule in RULES if rule.default or rule.assets]
     return None
 
 

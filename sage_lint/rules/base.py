@@ -5,7 +5,11 @@ abort the rest of the run.
 A rule may opt out of the default run by setting `default = False`: it then runs only when the
 caller asks for it (the CLI's `--assets`/`--select`). The missing-file rules use this — without
 the base-game archives loaded they would report every base asset as missing, so they are opt-in
-rather than flooding a plain `lint`."""
+rather than flooding a plain `lint`.
+
+An opt-in rule that also sets `assets = True` is one `--assets` turns on as a group (the
+asset-file rules); an opt-in rule that leaves `assets = False` is reachable only by naming it in
+`--select` (e.g. `unused-object`), so `--assets` does not silently drag it in."""
 
 from collections.abc import Iterable, Iterator
 
@@ -19,6 +23,7 @@ RULES: list[type["Rule"]] = []
 class Rule:
     code: str = ""  # set by a concrete subclass to enable auto-registration
     default: bool = True  # whether a plain run (no --select/--assets) includes this rule
+    assets: bool = False  # whether --assets turns this (opt-in) rule on as part of the asset group
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)

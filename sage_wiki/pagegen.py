@@ -27,12 +27,11 @@ from sage_ini.model.state import (
     select_command_set,
 )
 from sage_utils.views import (
-    _HERO_PLACEHOLDERS,
     _safe,
-    _upgrade_names,
     build_cost_view,
     display_name,
     localize,
+    recruited_hero_names,
 )
 from sage_wiki.images import command_icon_names, portrait_filename
 from sage_wiki.mapping import computed_fields
@@ -375,62 +374,11 @@ def building_units(game, obj, linker=None) -> list[list[str]]:
     return rows
 
 
-def _building_faction(game, obj):
-    """The playable PlayerTemplate a building belongs to — the one whose `Side` matches the
-    building's — or None. The faction's buildable-hero order indexes its REVIVE slots."""
-    raw = obj._fields.get("Side")
-    side = str(raw[-1] if isinstance(raw, list) else raw) if raw else None
-    if side is None:
-        return None
-    for faction in game.factions.values():
-        if not _safe(lambda f=faction: f.PlayableSide):
-            continue
-        other = faction._fields.get("Side")
-        if str(other[-1] if isinstance(other, list) else other) == side:
-            return faction
-    return None
-
-
-def _revive_order(faction) -> list[str]:
-    """A faction's heroes in REVIVE-slot order — its ring heroes then its regular buildable
-    heroes, raw and in declaration order. The `CreateAHero`/`RingHeroDummy` placeholders are
-    kept so each entry's index lines up with the command set's revive slots."""
-    order: list[str] = []
-    for field in ("BuildableRingHeroesMP", "BuildableHeroesMP"):
-        order.extend(_upgrade_names(faction._fields.get(field)))
-    return order
-
-
 def building_heroes(game, obj) -> list:
-    """The hero objects a building recruits. Its REVIVE buttons are enumerated in slot order
-    and mapped by position to the faction's `_revive_order`; every REVIVE button advances the
-    index, but a hero is only recruited when its button lacks the `NEED_UPGRADE` option (the
-    rest are locked behind a tech). Placeholders are dropped; de-duplicated across the
-    building's command sets, in first-recruited order."""
-    faction = _building_faction(game, obj)
-    if faction is None:
-        return []
-    order = _revive_order(faction)
-    if not order:
-        return []
-    recruited: list[str] = []
-    for set_name in command_set_names(obj):
-        command_set = game.commandsets.get(set_name)
-        if command_set is None:
-            continue
-        index = 0
-        for _slot, _button_name, button in _command_buttons(game, command_set):
-            if getattr(_safe(lambda b=button: b.Command), "name", None) != "REVIVE":
-                continue
-            hero = order[index] if index < len(order) else None
-            index += 1
-            if hero is None or hero in _HERO_PLACEHOLDERS or hero in recruited:
-                continue
-            options = _safe(lambda b=button: b.Options, []) or []
-            if any(getattr(o, "name", str(o)) == "NEED_UPGRADE" for o in options):
-                continue
-            recruited.append(hero)
-    return [game.objects[name] for name in recruited if name in game.objects]
+    """The hero objects a building recruits, resolved by the shared index-based REVIVE logic
+    (`sage_utils.views.recruited_hero_names`): REVIVE buttons enumerated in slot order and mapped
+    by position to the faction's buildable-hero order. Returns the loaded hero objects."""
+    return [game.objects[name] for name in recruited_hero_names(game, obj) if name in game.objects]
 
 
 def recruitment_section(game, obj, linker=None) -> str:

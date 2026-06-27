@@ -100,6 +100,7 @@ class _MissingAssetRule(Rule):
 
     code = ""  # base does not register; each concrete subclass sets its own code
     default = False  # opt-in: skipped by a plain run, enabled by --assets/--select
+    assets = True  # part of the asset group --assets turns on
     asset_class: type[_AssetFile]
     noun: str
     group: str  # which index the kind resolves against: "art" (textures/models) or "map"

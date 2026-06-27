@@ -17,7 +17,11 @@ from sage_lint.rules.assets import (
 from sage_lint.rules.base import Rule, run_rules
 from sage_lint.rules.commandbutton import RedundantNullificationRule
 from sage_lint.rules.commandset import CommandSetButtonRule
-from sage_lint.rules.definitions import DuplicateDefinitionRule
+from sage_lint.rules.definitions import (
+    DuplicateDefinitionRule,
+    UnusedDefinitionRule,
+    UnusedObjectRule,
+)
 from sage_lint.rules.macros import UndefinedMacroRule
 from sage_lint.rules.map_ini import MapBareModuleRule
 from sage_lint.rules.module_ops import ModuleOperationRule
@@ -301,6 +305,76 @@ class TestDuplicateDefinitionRule:
         game.load_document(parse("Object Foo\nEnd\n", file="a.ini").document)
         game.load_document(parse("Object Foo\nEnd\n", file="b.ini").document)
         assert not list(run_rules(game, [DuplicateDefinitionRule]))
+
+
+class TestUnusedDefinitionRule:
+    def test_flags_a_definition_nothing_references(self):
+        game = _load("Upgrade Lonely\nEnd\n")
+        diags = list(run_rules(game, [UnusedDefinitionRule]))
+
+        assert len(diags) == 1
+        assert diags[0].code == "unused-definition"
+        assert diags[0].severity is Severity.WARNING
+        assert diags[0].extra["name"] == "Lonely"
+        assert diags[0].extra["table"] == "upgrades"
+
+    def test_does_not_flag_a_referenced_definition(self):
+        # The upgrade is named by a command button, so it is reached and not flagged.
+        game = _load("Upgrade Used\nEnd\nCommandButton B\n    Upgrade = Used\nEnd\n")
+        names = {d.extra["name"] for d in run_rules(game, [UnusedDefinitionRule])}
+        assert "Used" not in names
+
+    def test_does_not_flag_an_object(self):
+        # Objects are split off to the unused-object rule, which is off by default.
+        game = _load("Object Orphan\nEnd\n")
+        assert not list(run_rules(game, [UnusedDefinitionRule]))
+
+    def test_does_not_flag_an_entry_point_kind(self):
+        # GameData is loaded by the engine directly and named by nothing in the data, so its
+        # kind is not referenceable and is never reported as unused.
+        game = _load("GameData\n    FramesPerSecondLimit = 30\nEnd\n")
+        assert not list(run_rules(game, [UnusedDefinitionRule]))
+
+    def test_does_not_flag_an_asset_definition(self):
+        # FXList lives in an excluded asset table — its references resolve in ways the graph
+        # cannot see, so a missing reverse edge is not treated as "unused" here.
+        game = _load("FXList FX_Boom\nEnd\n")
+        assert not list(run_rules(game, [UnusedDefinitionRule]))
+
+    def test_does_not_flag_a_faction(self):
+        # PlayerTemplate is an engine entry point the game loads directly; most factions are
+        # named by nothing in the data, so they are excluded rather than reported.
+        game = _load("PlayerTemplate FactionMen\n    Side = Men\nEnd\n")
+        assert not list(run_rules(game, [UnusedDefinitionRule]))
+
+    def test_runs_on_a_plain_default_run(self):
+        game = _load("Upgrade Lonely\nEnd\n")
+        assert any(d.code == "unused-definition" for d in run_rules(game))
+
+
+class TestUnusedObjectRule:
+    def test_is_off_by_default(self):
+        game = _load("Object Orphan\nEnd\n")
+        assert all(d.code != "unused-object" for d in run_rules(game))
+
+    def test_flags_an_unreferenced_object_when_selected(self):
+        game = _load("Object Orphan\nEnd\n")
+        diags = list(run_rules(game, [UnusedObjectRule]))
+
+        assert len(diags) == 1
+        assert diags[0].code == "unused-object"
+        assert diags[0].severity is Severity.WARNING
+        assert diags[0].extra["name"] == "Orphan"
+
+    def test_does_not_flag_a_referenced_object(self):
+        # The member object is named by the horde's payload, so it is reached.
+        game = _load(
+            "Object Member\nEnd\n"
+            "Object Horde\n    Behavior = HordeContain Tag\n"
+            "        InitialPayload = Member 5\n    End\nEnd\n"
+        )
+        names = {d.extra["name"] for d in run_rules(game, [UnusedObjectRule])}
+        assert "Member" not in names
 
 
 class TestUndefinedMacroRule:
