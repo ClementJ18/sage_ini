@@ -9,7 +9,8 @@ from pathlib import Path
 
 from sage_ini.loader import load_game
 from sage_ini.stats import ini_root
-from sage_lint.linter import lint_file, lint_file_cached
+from sage_lint.commands.serve import _defs_changed
+from sage_lint.linter import lint_file, lint_file_cached, lint_file_cached_game
 
 # A locomotor and an object that references it from a *separate* file — the case a single-file
 # lint cannot resolve, but a cache-backed re-lint can.
@@ -68,6 +69,59 @@ class TestLintFileCached:
         )
         cached = lint_file_cached(cache, override, include_root=root)
         assert not [d for d in cached if d.code == "unused-definition"]
+
+
+class TestDefsChanged:
+    """The saved-definition diff behind the daemon's `defs_changed` flag: a save that adds or
+    removes names sibling files may reference tells the editor a folder rebuild is due."""
+
+    @staticmethod
+    def _built(cache, path, root):
+        _diags, built = lint_file_cached_game(cache, path, include_root=root)
+        assert built is not None
+        return built
+
+    def test_an_unchanged_save_does_not_flag(self, tmp_path):
+        root = _mod(tmp_path)
+        cache = load_game(root).game
+        built = self._built(cache, root / "locomotor.ini", root)
+        assert not _defs_changed(cache, built, str(root / "locomotor.ini"))
+
+    def test_a_new_definition_flags(self, tmp_path):
+        root = _mod(tmp_path)
+        cache = load_game(root).game
+        (root / "locomotor.ini").write_text(
+            _LOCO + "Locomotor OtherLoco\n    Surfaces = GROUND\nEnd\n", encoding="utf-8"
+        )
+        built = self._built(cache, root / "locomotor.ini", root)
+        assert _defs_changed(cache, built, str(root / "locomotor.ini"))
+
+    def test_a_removed_definition_flags(self, tmp_path):
+        root = _mod(tmp_path)
+        cache = load_game(root).game
+        (root / "locomotor.ini").write_text("; emptied\n", encoding="utf-8")
+        built = self._built(cache, root / "locomotor.ini", root)
+        assert _defs_changed(cache, built, str(root / "locomotor.ini"))
+
+    def test_a_cross_file_redefinition_does_not_flag(self, tmp_path):
+        # hero.ini gains its own `Locomotor MyLoco`: the name already resolves in the cache
+        # (attributed to locomotor.ini), so the reachable name set — what sibling files can
+        # reference — is unchanged, and saving hero.ini must not rebuild on every save.
+        root = _mod(tmp_path)
+        cache = load_game(root).game
+        (root / "hero.ini").write_text(_HERO + _LOCO, encoding="utf-8")
+        built = self._built(cache, root / "hero.ini", root)
+        assert not _defs_changed(cache, built, str(root / "hero.ini"))
+
+    def test_a_macro_value_change_flags(self, tmp_path):
+        # A `#define`'s value expands in sibling files at parse time, so revaluing it has the
+        # same blast radius as renaming it.
+        root = _mod(tmp_path)
+        (root / "macros.ini").write_text("#define MY_COST 50\n", encoding="utf-8")
+        cache = load_game(root).game
+        (root / "macros.ini").write_text("#define MY_COST 60\n", encoding="utf-8")
+        built = self._built(cache, root / "macros.ini", root)
+        assert _defs_changed(cache, built, str(root / "macros.ini"))
 
 
 class TestBaseGameInclude:
@@ -139,6 +193,36 @@ class TestServeProtocol:
 
             assert result["type"] == "file" and result["id"] == 7
             assert not [d for d in result["diagnostics"] if d["severity"] == "error"]
+        finally:
+            proc.stdin.write(json.dumps({"cmd": "shutdown"}) + "\n")
+            proc.stdin.flush()
+            proc.wait(timeout=10)
+        assert proc.returncode == 0
+
+    def test_flags_a_saved_definition_change_but_not_a_buffer_one(self, tmp_path):
+        root = _mod(tmp_path)
+        added = _LOCO + "Locomotor OtherLoco\n    Surfaces = GROUND\nEnd\n"
+        proc = self._serve(root)
+        try:
+            assert self._read(proc)["type"] == "folder"
+
+            # A buffer lint (unsaved content) never asks for a rebuild, however it changed.
+            proc.stdin.write(
+                json.dumps(
+                    {"cmd": "lint_file", "path": str(root / "locomotor.ini"), "content": added}
+                )
+                + "\n"
+            )
+            proc.stdin.flush()
+            assert "defs_changed" not in self._read(proc)
+
+            # The same change saved to disk does: sibling files may now reference OtherLoco.
+            (root / "locomotor.ini").write_text(added, encoding="utf-8")
+            proc.stdin.write(
+                json.dumps({"cmd": "lint_file", "path": str(root / "locomotor.ini")}) + "\n"
+            )
+            proc.stdin.flush()
+            assert self._read(proc)["defs_changed"] is True
         finally:
             proc.stdin.write(json.dumps({"cmd": "shutdown"}) + "\n")
             proc.stdin.flush()

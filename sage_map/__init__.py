@@ -8,8 +8,27 @@ itself defines, or a closed enum) — so a map can be linted the way `sage_lint`
 
 v1 covers script-argument and object references only; object-property typing and the
 `content_type` action table are deferred. See docs/sage_map_plan.md.
+
+`sage_map.diff` adds a human-readable content diff of two maps (or of the map files a git commit
+touches), reporting moved objects, script edits and terrain summaries where git can only say
+"binary files differ".
 """
 
+from sage_map.diff import (
+    MapDiff,
+    MapFileChange,
+    MapFileDiff,
+    commit_map_changes,
+    diff_commit_maps,
+    diff_map_files,
+    diff_maps,
+    diff_range_maps,
+    format_map_diff,
+    format_map_file_diffs,
+    format_map_file_diffs_md,
+    range_map_changes,
+    resolve_range,
+)
 from sage_map.linter import lint_map, lint_map_file, lint_maps
 from sage_map.model import (
     MapModel,
@@ -30,6 +49,9 @@ from sage_map.scripts import (
 __all__ = [
     "ARG_SPECS",
     "ArgSpec",
+    "MapDiff",
+    "MapFileChange",
+    "MapFileDiff",
     "MapModel",
     "MapSymbols",
     "ResolvedArg",
@@ -37,6 +59,16 @@ __all__ = [
     "ScriptArgRef",
     "arg_spec",
     "build_symbols",
+    "commit_map_changes",
+    "diff_commit_maps",
+    "diff_map_files",
+    "diff_maps",
+    "diff_range_maps",
+    "format_map_diff",
+    "format_map_file_diffs",
+    "format_map_file_diffs_md",
+    "range_map_changes",
+    "resolve_range",
     "iter_script_arguments",
     "lint_map",
     "lint_map_file",

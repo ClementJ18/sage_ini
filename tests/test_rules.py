@@ -363,6 +363,16 @@ class TestUnusedDefinitionRule:
         names = {d.extra["name"] for d in run_rules(game, [UnusedDefinitionRule])}
         assert "Command_Build" not in names
 
+    def test_does_not_flag_a_create_a_hero_button(self):
+        # A `CreateAHeroUI*` field marks a button the engine injects into a custom hero's
+        # command set at runtime, so no command set in the data names it.
+        game = _load(
+            "CommandButton Command_CreateAHero_Blade\n"
+            "    Command = PURCHASE_SCIENCE\n"
+            "    CreateAHeroUIMinimumLevel = 3\nEnd\n"
+        )
+        assert not list(run_rules(game, [UnusedDefinitionRule]))
+
     def test_always_referenced_config_suppresses_a_kind(self):
         game = _load("PlayerAIType Multiplayer_Human\nEnd\n")
         # By default a PlayerAIType the data never names is flagged; the config exempts the kind.
@@ -1057,6 +1067,40 @@ class TestLintFolder:
         root = self._with_map(tmp_path)
         diags = lint_folder(root, rules=[MapBareModuleRule], exclude=(root / "maps",))
         assert not [d for d in diags if d.code == "map-bare-module"]
+
+    def _with_map_only_button(self, tmp_path):
+        # A global button nothing global references, reached only by a map.ini's command set.
+        (tmp_path / "global.ini").write_text(
+            "CommandButton Command_MapOnly\n    Command = UNIT_BUILD\nEnd\n", encoding="utf-8"
+        )
+        map_dir = tmp_path / "maps" / "MyMap"
+        map_dir.mkdir(parents=True)
+        (map_dir / "map.ini").write_text(
+            "CommandSet MapSet\n    1 = Command_MapOnly\nEnd\n", encoding="utf-8"
+        )
+        return tmp_path
+
+    def test_a_definition_only_a_map_references_is_not_unused(self, tmp_path):
+        # The global graph cannot see per-map contexts; the finding is retracted once the
+        # map builds show they reference the definition.
+        root = self._with_map_only_button(tmp_path)
+        names = {
+            d.extra["name"]
+            for d in lint_folder(root, rules=[UnusedDefinitionRule])
+            if d.code == "unused-definition"
+        }
+        assert "Command_MapOnly" not in names
+
+    def test_the_map_reference_is_not_seen_when_maps_are_excluded(self, tmp_path):
+        # With the maps directory excluded no map context is built, so the only reference
+        # to the button is invisible and the finding stands.
+        root = self._with_map_only_button(tmp_path)
+        names = {
+            d.extra["name"]
+            for d in lint_folder(root, rules=[UnusedDefinitionRule], exclude=(root / "maps",))
+            if d.code == "unused-definition"
+        }
+        assert "Command_MapOnly" in names
 
 
 class TestExcludeFromLint:

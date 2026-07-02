@@ -31,9 +31,14 @@ set "STAGE=%ROOT%\dist\SageLint"
 if exist "%STAGE%" rmdir /s /q "%STAGE%"
 REM Copy the package runtime files, leaving out dev-only scripts and caches. robocopy exit
 REM codes below 8 all mean success, so only >=8 is a real failure.
+REM Keep .python-version: it selects Sublime's Python 3.8 plugin host, without which the
+REM package loads under the legacy 3.3 host and f-strings raise SyntaxError on import.
+REM Keep .no-sublime-package: it tells Package Control to install this as a loose folder
+REM rather than a zip, so the bundled bin\ binary lands on disk where subprocess can exec it
+REM (files inside a .sublime-package zip are never extracted and have no filesystem path).
 robocopy "%SCRIPT_DIR%." "%STAGE%" /E ^
     /XD __pycache__ bin ^
-    /XF build_package.bat install.sh install.bat generate_syntax.py .python-version >nul
+    /XF build_package.bat install.sh install.bat generate_syntax.py >nul
 if errorlevel 8 (echo [error] staging copy failed & popd & exit /b 1)
 
 echo === [3/4] Bundling the binary into bin\ ===

@@ -1,6 +1,6 @@
 # SAGE Lint — Sublime Text 4 plugin
 
-**Version 0.1.0** — Lint and format SAGE-engine (BFME) ini files inline with `sage_lint`.
+**Version 0.2.0** — Lint and format SAGE-engine (BFME) ini files inline with `sage_lint`.
 
 Lints SAGE `.ini` / `.inc` / `.bhav` files with `sage_lint` and shows the errors and
 warnings inline in Sublime Text 4.
@@ -8,11 +8,18 @@ warnings inline in Sublime Text 4.
 - Opening a project folder lints the whole folder and spreads each diagnostic onto the
   file and line it belongs to.
 - Saving a file — or, with `lint_on_idle`, pausing while typing — re-lints **only that
-  file**, so neither re-parses the whole folder.
+  file**, so neither re-parses the whole folder. When a save adds or removes definitions
+  (things sibling files may reference), a debounced folder rebuild follows automatically,
+  so new names resolve everywhere and references to deleted ones re-flag without a manual
+  **Lint Folder** (`auto_rebuild`). While a build is in flight, per-file lints wait for it
+  and re-run against the fresh cache — never reported from stale state.
 - Each diagnostic is drawn as a squiggly underline under the offending line, a gutter
-  icon, and an inline annotation with the message. The full message also appears in the
-  status bar when the caret is on the line, and on hover together with the diagnostic
-  code's description. A per-file `SAGE E:n W:m` counter sits in the status bar.
+  icon, and its message on a phantom line below the code, where it stays visible no matter
+  how long the line is (`diagnostic_display` switches to right-aligned annotations or
+  message-less; `phantom_scope: "caret-line"` shows only the caret line's message). The
+  full message also appears in the status bar when the caret is on the line, and on hover
+  together with the diagnostic code's description. A per-file `SAGE E:n W:m` counter sits
+  in the status bar.
 - Format the buffer in `sage_lint`'s canonical style on demand or on save, apply the
   auto-fixable diagnostics, and jump between issues — see Commands below.
 - **Syntax highlighting** for SAGE ini. A `Sage Lint` syntax colours block headers, field
@@ -75,8 +82,15 @@ in `bin/`, and zips a `.sublime-package`, all into `dist/` (needs PyInstaller:
 sage_lint\plugins\sublime\build_package.bat
 ```
 
-Output: `dist\SageLint\` (drop into the `Packages` directory) and `dist\SageLint.sublime-package`
-(drop into `Installed Packages`). Build once per OS — PyInstaller binaries aren't cross-platform.
+Output: `dist\SageLint\` (drop into the `Packages` directory) and `dist\SageLint.sublime-package`.
+Build once per OS — PyInstaller binaries aren't cross-platform.
+
+**For a bundled binary, install the folder, not the zip.** Sublime never extracts a
+`.sublime-package` to disk, so a binary inside one has no filesystem path and can't be
+`exec`'d — the plugin would report "no sage_lint found" and fall back to `python -m sage_lint`.
+The `.sublime-package` is only useful when installed **through Package Control**, which honors
+the bundled `.no-sublime-package` marker and unpacks it into `Packages/SageLint` (giving the
+binary a real path). A manual install must use the `dist\SageLint\` folder.
 
 ### By hand
 
@@ -101,10 +115,12 @@ Output: `dist\SageLint\` (drop into the `Packages` directory) and `dist\SageLint
    To ship all platforms in one package, use per-OS subfolders instead — `bin/win32/`,
    `bin/darwin/`, `bin/linux/` — the plugin checks both `bin/<name>` and `bin/<platform>/<name>`.
 
-3. **Distribute.** Either give the teammate the whole `SageLint/` folder to drop in
-   `Preferences > Browse Packages…`, or zip it to `SageLint.sublime-package` and drop that in
-   the `Installed Packages/` directory. No Python, no checkout, no settings — the project's
-   `.sagelint` is still read from the linted folder at runtime as usual.
+3. **Distribute.** Give the teammate the whole `SageLint/` folder to drop in
+   `Preferences > Browse Packages…`. No Python, no checkout, no settings — the project's
+   `.sagelint` is still read from the linted folder at runtime as usual. Do **not** hand them a
+   zipped `.sublime-package` for a bundled-binary build: Sublime won't extract it, so the
+   binary won't be found (see the note above). The `.no-sublime-package` marker in this folder
+   only takes effect for installs done through Package Control.
 
 Notes: each binary bundles Python + `sage_ini` (~15–40 MB). One-shot commands (format/fix)
 spawn the binary per call (~0.1–0.3 s cold start); the `serve` daemon is long-lived, so it
@@ -124,6 +140,10 @@ below.
 | `format_on_save` | `false`                      | Reformat the buffer to canonical style on every save.    |
 | `lint_on_idle`   | `true`                       | Re-lint the live buffer shortly after you stop typing.   |
 | `idle_delay_ms`  | `800`                        | Idle delay before an on-idle lint fires.                 |
+| `diagnostic_display` | `"phantom"`              | Message placement: `"phantom"` (own line below the code), `"annotation"` (right-aligned inline), `"none"`. |
+| `phantom_scope`  | `"all"`                      | Phantom messages on `"all"` lines, or `"caret-line"` only. |
+| `auto_rebuild`   | `true`                       | Rebuild the folder cache when a save changes the definition set. |
+| `rebuild_delay_ms` | `2500`                     | Debounce before such an automatic rebuild fires.         |
 
 ## Project config (`.sagelint`)
 

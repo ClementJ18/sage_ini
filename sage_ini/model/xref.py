@@ -14,7 +14,7 @@ from sage_ini.model.objects import REGISTRY, IniObject, resolve_annotation
 from sage_ini.model.types import KeyedRecord, Reference
 from sage_ini.walk import walk_objects
 
-__all__ = ["Xref", "referenceable_keys"]
+__all__ = ["Xref", "referenceable_keys", "references_into"]
 
 # Converted values that hold no reference and must not be descended into.
 _SCALAR = (str, bytes, bool, int, float, enum.Enum)
@@ -101,6 +101,43 @@ def _referenced_objects(value, game: Game, seen: set[int]) -> Iterator[IniObject
             yield from _referenced_objects(item, game, seen)
 
 
+def _object_references(root: IniObject, game: Game) -> set[IniObject]:
+    """The objects registered in `game` referenced anywhere in `root`'s subtree (not root
+    itself). `game` is the registration authority the endpoints are checked against — usually
+    `root`'s own game, but a layered build (a per-map context) passes the game beneath it to
+    collect the edges it makes downward."""
+    found: set[IniObject] = set()
+    for node in walk_objects(root):
+        fieldspec = type(node)._fieldspec
+        for key in node.fields:
+            if key not in fieldspec:
+                continue
+            try:
+                value = getattr(node, key)
+            except (ValueError, KeyError, TypeError, IndexError):
+                continue  # a bad value is the validate/lint pass's diagnostic
+            found.update(_referenced_objects(value, game, set()))
+        # Digit-keyed slots (`1 = Command_X`) are dynamic, so no typed field carries them;
+        # fold their resolved targets in directly (a command set's buttons are real edges).
+        for target in node.numbered_slot_targets():
+            found.update(_referenced_objects(target, game, set()))
+    found.discard(root)
+    return found
+
+
+def references_into(built: Game, target: Game) -> set[IniObject]:
+    """Every object registered in `target` that something in `built` references. A layered
+    context (a per-map build) resolves the names it misses through `target` as its reference
+    fallback, so its converted values hold `target`'s objects directly; collecting them shows
+    which definitions beneath the layer it reaches — edges `Xref.for_game(target)` alone
+    cannot see, since the layer's objects are not registered in `target`."""
+    found: set[IniObject] = set()
+    for table in built.tables.values():
+        for root in table.values():
+            found |= _object_references(root, target)
+    return found
+
+
 class Xref:
     """The forward/reverse reference graph of a loaded `Game`, built once."""
 
@@ -131,23 +168,7 @@ class Xref:
 
     def _references_of(self, root: IniObject) -> set[IniObject]:
         """The registered objects referenced anywhere in `root`'s subtree (not self)."""
-        found: set[IniObject] = set()
-        for node in walk_objects(root):
-            fieldspec = type(node)._fieldspec
-            for key in node.fields:
-                if key not in fieldspec:
-                    continue
-                try:
-                    value = getattr(node, key)
-                except (ValueError, KeyError, TypeError, IndexError):
-                    continue  # a bad value is the validate/lint pass's diagnostic
-                found.update(_referenced_objects(value, self.game, set()))
-            # Digit-keyed slots (`1 = Command_X`) are dynamic, so no typed field carries them;
-            # fold their resolved targets in directly (a command set's buttons are real edges).
-            for target in node.numbered_slot_targets():
-                found.update(_referenced_objects(target, self.game, set()))
-        found.discard(root)
-        return found
+        return _object_references(root, self.game)
 
     def references(self, obj: IniObject) -> frozenset[IniObject]:
         """The objects `obj` references (forward edges)."""

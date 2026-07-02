@@ -37,7 +37,7 @@ from sage_lint.commands.common import (
     select_and_summarize,
     split_codes,
 )
-from sage_lint.linter import build_cache, lint_file_cached
+from sage_lint.linter import build_cache, lint_file_cached, lint_file_cached_game
 from sage_lint.ruleconfig import set_options
 
 
@@ -224,13 +224,17 @@ def _emit(obj: dict) -> None:
 
 
 def _lint_request(game, path, content, root, rules, include_bases=()):
-    """Re-lint a daemon `lint_file` request against the cache. With `content` (the live editor
-    buffer), lint that text from a temp file beside the real one — so relative `#include`s
-    resolve identically — and relabel the diagnostics back onto the real path; otherwise lint
-    the file on disk. `include_bases` are the merged base-game include roots, so an `#include`
-    that falls through to the base resolves here just as it does on the whole-folder build."""
+    """Re-lint a daemon `lint_file` request against the cache, as `(diagnostics, built)`. With
+    `content` (the live editor buffer), lint that text from a temp file beside the real one —
+    so relative `#include`s resolve identically — and relabel the diagnostics back onto the
+    real path; otherwise lint the file on disk. `include_bases` are the merged base-game
+    include roots, so an `#include` that falls through to the base resolves here just as it
+    does on the whole-folder build.
+
+    `built` is the file's throwaway single-file build, for the saved-definition diff — None
+    for a buffer lint (only what is on disk should trigger a rebuild) or a failed load."""
     if content is None:
-        return lint_file_cached(
+        return lint_file_cached_game(
             game, path, include_root=root, rules=rules, include_bases=include_bases
         )
     handle, tmp = tempfile.mkstemp(prefix=".sagelint-", suffix=".tmp", dir=os.path.dirname(path))
@@ -254,14 +258,70 @@ def _lint_request(game, path, content, root, rules, include_bases=()):
             relabelled.items.append(replace(diag, span=span))
         else:
             relabelled.items.append(diag)
-    return relabelled
+    return relabelled, None
+
+
+def _defs_changed(cache: object, built: object, path: str) -> bool:
+    """Whether saving `path` changed the names it contributes to the assembled game — a
+    definition or `#define` added, removed, or (for a macro) revalued. Such a change affects
+    *sibling* files: their references start resolving or dangling, which a single-file re-lint
+    against the stale cache cannot show. The editor reacts to the flag by scheduling a
+    debounced folder rebuild.
+
+    Both sides attribute names to the file by span, and an addition only counts when the cache
+    cannot resolve the name at all — so a definition shadowed by a cross-file override (whose
+    cached span points at the *other* file) does not re-flag on every save."""
+    key = os.path.normcase(str(path))
+
+    def in_file(span) -> bool:
+        return span is not None and os.path.normcase(span.file) == key
+
+    def own_definitions(game) -> set[tuple[str, str]]:
+        return {
+            (obj.key, obj.name)
+            for table in game.tables.values()
+            for obj in table.values()
+            if isinstance(obj.name, str) and in_file(getattr(obj, "span", None))
+        }
+
+    fresh = own_definitions(built)
+    cached = own_definitions(cache)
+    # A name the cache attributes to this file but the file no longer defines may now dangle.
+    if cached - fresh:
+        return True
+    # A name the cache cannot resolve at all is genuinely new. (An addition it *can* resolve
+    # is a cross-file redefinition — shadowed or shadowing, the reachable name set is intact.)
+    if any(cache.lookup(k, n)[0] is None for k, n in fresh - cached):
+        return True
+
+    fresh_macros = {
+        name: built.macros.get(name)
+        for name, span in built.macro_definitions.items()
+        if in_file(span)
+    }
+    cached_macros = {
+        name: cache.macros.get(name)
+        for name, span in cache.macro_definitions.items()
+        if in_file(span)
+    }
+    if any(name not in fresh_macros for name in cached_macros):
+        return True
+    for name, value in fresh_macros.items():
+        if name in cached_macros:
+            if cached_macros[name] != value:
+                return True  # this file's value was the winning one and it changed
+        elif not cache.has_macro(name):
+            return True
+    return False
 
 
 def run_serve(args: argparse.Namespace) -> int:
     """Long-lived daemon for an editor: build the game once, then re-lint individual files
     against that cache on demand — full-folder accuracy at single-file speed. Speaks
     newline-delimited JSON: one `{"type":"folder",...}` message once the build is ready (and
-    again after each `rebuild`), one `{"type":"file",...}` per `lint_file` request, and one
+    again after each `rebuild`), one `{"type":"file",...}` per `lint_file` request (carrying
+    `defs_changed: true` when a saved file's contributed definitions no longer match the
+    cache, so the editor knows a folder rebuild is due), and one
     `{"type":"index",...}` (the symbol/macro/string/module tables) per `index` request. Commands
     arrive as JSON lines on stdin: `lint_file` (with `path`, optional `id`), `index`, `rebuild`,
     `shutdown`."""
@@ -335,7 +395,7 @@ def run_serve(args: argparse.Namespace) -> int:
                 path = command.get("path")
                 include_bases = (base_layer.include_root,) if base_layer is not None else ()
                 try:
-                    diagnostics = _lint_request(
+                    diagnostics, built = _lint_request(
                         game, path, command.get("content"), root, rule_set, include_bases
                     )
                     shown, summary = select_and_summarize(
@@ -348,6 +408,8 @@ def run_serve(args: argparse.Namespace) -> int:
                         "diagnostics": payload,
                         "summary": summary,
                     }
+                    if built is not None and _defs_changed(game, built, path):
+                        message["defs_changed"] = True
                 except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
                     message = {"type": "file", "path": path, "error": str(exc)}
                 if "id" in command:

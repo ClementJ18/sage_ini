@@ -3,7 +3,8 @@ files to the canonical style (or reports them with `--check`, or formats stdin);
 `lint` assembles a game from a folder and reports its problems. Both can emit JSON
 (`--output-format json`) for an editor plugin. `diff` assembles the mod at two git refs
 (config-aware, with the base game merged in) and reports a human-readable changelog of the
-game-data changes between them.
+game-data changes between them; `diff-maps` does the same for the binary `.map`/`.bse` files
+one commit touches.
 
 This module owns the argument parser and dispatch; the command implementations live in
 `sage_lint.commands` (one module per command, shared option/report plumbing in `common`).
@@ -16,7 +17,7 @@ from sage_ini.parser.diagnostics import Severity
 from sage_ini.parser.io import INI_SUFFIXES
 from sage_lint.baseline import BASELINE_NAME
 from sage_lint.commands.common import SORTERS, effective_root, load_lint_config
-from sage_lint.commands.diff import run_diff
+from sage_lint.commands.diff import run_diff, run_diff_maps
 from sage_lint.commands.format import run_format
 from sage_lint.commands.init import run_init
 from sage_lint.commands.lint import run_lint, run_lint_maps, run_list_codes
@@ -408,6 +409,43 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also report .str / .csv display-string changes (off by default)",
     )
+    diff.add_argument(
+        "--player",
+        action="store_true",
+        help="append a player-facing section: display names, macros resolved to their "
+        "values, and each change attributed to the units that use it, grouped by faction",
+    )
+
+    diff_maps_cmd = subparsers.add_parser(
+        "diff-maps",
+        help="changelog of the binary .map/.bse files a git commit or range touches",
+        description="For every WorldBuilder map file the commit (or range) adds, removes, "
+        "modifies or renames, parse both sides out of git and report what actually changed — "
+        "placed objects, teams, players, scripts, trigger areas, map settings, and a terrain "
+        "summary — where git can only say 'binary files differ'. Purely structural: no game "
+        "assembly, bases or .sagelint config involved.",
+    )
+    diff_maps_cmd.add_argument(
+        "commit",
+        nargs="?",
+        default="HEAD",
+        help="a commit (default: HEAD), diffed against its parent — or a git range old..new "
+        "(net change between the endpoints; old...new diffs from the merge base, like git diff)",
+    )
+    diff_maps_cmd.add_argument(
+        "dir",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="the git repo working dir (default: current dir)",
+    )
+    diff_maps_cmd.add_argument(
+        "--output-format",
+        choices=("text", "json", "md"),
+        default="text",
+        help="report format: human text (default), machine-readable json, or markdown "
+        "(bulleted, code-quoted — pastes cleanly into a PR or wiki page)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -458,6 +496,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "diff":
         return run_diff(args, parser)
+
+    if args.command == "diff-maps":
+        return run_diff_maps(args)
 
     if args.command == "serve":
         return run_serve(args)

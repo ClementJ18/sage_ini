@@ -5,11 +5,16 @@ once, reports it, then re-lints individual files against that cache on save (or,
 `lint_on_idle`, while typing) in milliseconds — so cross-file references resolve without
 re-parsing the folder every keystroke. Diagnostics are line-level (sage_lint spans carry no
 column), so each is drawn as a squiggly underline under the offending line, a gutter icon,
-and an inline annotation; the full message also shows in the status bar when the caret is on
-the line, and on hover with the code's description.
+and the message on its own phantom line below the code (`diagnostic_display` switches this
+to a right-aligned annotation, or off); the full message also shows in the status bar when
+the caret is on the line, and on hover with the code's description.
 
-The cache refreshes on the initial build and on **Lint Folder** (a daemon rebuild); a brand
-new definition added since the last build is only seen by sibling files after a rebuild.
+The cache refreshes on the initial build, on **Lint Folder** (a daemon rebuild), and — with
+`auto_rebuild` — automatically (debounced) when a save adds or removes definitions, so a
+brand new definition resolves from sibling files and references to a deleted one re-flag
+without a manual rebuild. While a build is in flight, per-file lints are deferred and re-run
+against the fresh cache when it lands (never reported from stale state), and a lint result
+that arrives after further edits is dropped rather than drawn on the wrong lines.
 
 The same daemon also serves a **symbol index** from the assembled game (an `index` request
 after every build): every definition with its source span, the macro and string tables, and
@@ -33,13 +38,14 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 
 import sublime
 import sublime_plugin
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __description__ = "Lint and format SAGE-engine (BFME) ini files inline with sage_lint."
 
 SETTINGS_FILE = "SageLint.sublime-settings"
@@ -59,14 +65,34 @@ SEVERITY_STYLE = {
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 COUNT_STATUS = "sage_lint_counts"
 CARET_STATUS = "sage_lint"
+BUILD_STATUS = "sage_lint_build"
+
+# Right-aligned annotations cap the message at this many characters (the full text is always
+# on hover, in the status bar, and in Show Diagnostics). Phantoms are not capped: they have
+# their own line, so the full message wraps to the viewport width instead.
+INLINE_MESSAGE_LIMIT = 100
 
 # Diagnostics keyed by normalised absolute file path -> list of diagnostic dicts as emitted
 # by `sage_lint ... --output-format json`. The single source of truth the views render from.
 _diagnostics = {}
 # Per-view debounce token for lint-on-idle.
 _pending_edits = {}
+# One PhantomSet per view id, drawing diagnostic messages on their own line below the code
+# (an annotation right-aligns past the viewport on the long lines typical of ini data).
+_phantom_sets = {}
+# Last caret row per view id, so caret-scoped phantoms only redraw when the row changes.
+_last_caret_row = {}
 _code_desc_cache = None
 _lock = threading.Lock()
+
+# Build-state bookkeeping: roots (normalised) whose daemon is mid-(re)build, and the per-file
+# lints deferred until that build's folder report lands — a request queued behind a build
+# would be answered seconds late, against content the user has since edited. Guarded by
+# `_state_lock` (touched from the main thread and Sublime's async worker alike).
+_building = set()
+_deferred = {}  # root key -> {path key: path} to re-lint once the build completes
+_pending_rebuilds = {}  # root key -> debounce token for defs-changed auto-rebuilds
+_state_lock = threading.Lock()
 
 
 def _log(message):
@@ -237,19 +263,72 @@ def _ensure_daemon(root):
         return proc, True
 
 
+def _is_building(root):
+    with _state_lock:
+        return _normcase(root) in _building
+
+
+def _mark_building(root, building):
+    """Record whether `root`'s daemon is mid-(re)build, and mirror it as a persistent status
+    on the root's views so it is obvious why lint results are not updating yet."""
+    key = _normcase(root)
+    with _state_lock:
+        if building:
+            _building.add(key)
+        else:
+            _building.discard(key)
+    for window in sublime.windows():
+        if all(_normcase(folder) != key for folder in window.folders()):
+            continue
+        for view in window.views():
+            if building:
+                view.set_status(BUILD_STATUS, "SAGE: building index…")
+            else:
+                view.erase_status(BUILD_STATUS)
+
+
+def _defer_lint(root, file_name):
+    with _state_lock:
+        _deferred.setdefault(_normcase(root), {})[_normcase(file_name)] = file_name
+
+
+def _flush_deferred(root):
+    """Re-lint the files whose lints were deferred during `root`'s build, now against the
+    fresh cache — a still-dirty buffer is sent as content, so nothing saved or typed during
+    the build is reported from stale state."""
+    with _state_lock:
+        paths = list(_deferred.pop(_normcase(root), {}).values())
+    for path in paths:
+        view = _view_for_path(path)
+        if view is not None and view.is_valid() and view.is_dirty():
+            content = view.substr(sublime.Region(0, view.size()))
+            _lint_buffer_async(view, root, path, content)
+        else:
+            _lint_file_async(view, root, path)
+
+
 def _daemon_send(root, command):
-    """Send one command to `root`'s daemon, starting it if needed. On a fresh start the
-    initial folder build is already coming, so a redundant `rebuild` is dropped."""
+    """Send one command to `root`'s daemon, starting it if needed. A `rebuild` is dropped
+    while a build is already in flight — including the initial build of a fresh daemon —
+    since that build's folder report already reflects the current disk state."""
+    rebuild = command.get("cmd") == "rebuild"
+    if rebuild and _is_building(root):
+        return
     proc, started = _ensure_daemon(root)
     if proc is None:
         return
-    if started and command.get("cmd") == "rebuild":
-        return  # the initial build will emit the folder report
+    if started:
+        _mark_building(root, True)  # the fresh daemon is building its initial cache right now
+        if rebuild:
+            return
     try:
         proc.stdin.write(json.dumps(command) + "\n")
         proc.stdin.flush()
     except (OSError, ValueError) as exc:
         _log("daemon write failed: " + str(exc))
+        return
+    if rebuild:
+        _mark_building(root, True)  # optimistic; the daemon's `building` message confirms it
 
 
 def _daemon_reader(proc, key, root):
@@ -277,6 +356,12 @@ def _on_daemon_exit(key, root):
         proc = _daemons.get(key)
         if proc is not None and proc.poll() is not None:
             _daemons.pop(key, None)
+    # The daemon died mid-flight: clear its build state (a fresh daemon rebuilds from scratch)
+    # and drop the lints deferred on it — the next save re-lints against the new cache.
+    _mark_building(root, False)
+    with _state_lock:
+        _deferred.pop(key, None)
+        _pending_rebuilds.pop(key, None)
     _log("daemon stopped for " + os.path.basename(root.rstrip(os.sep)))
 
 
@@ -305,6 +390,7 @@ def _on_daemon_message(root, message):
     kind = message.get("type")
     if kind == "building":
         _build_started[_normcase(root)] = time.monotonic()
+        _mark_building(root, True)
         sublime.status_message("sage_lint: building " + os.path.basename(root.rstrip(os.sep)) + "…")
     elif kind == "folder":
         _apply_folder_message(root, message)
@@ -318,6 +404,7 @@ def _on_daemon_message(root, message):
 
 
 def _apply_folder_message(root, message):
+    _mark_building(root, False)
     grouped = {}
     for diag in message.get("diagnostics", []):
         grouped.setdefault(_normcase(diag["file"]), []).append(diag)
@@ -332,6 +419,8 @@ def _apply_folder_message(root, message):
     # The cache the daemon just (re)built is the source for the symbol index too; pull it now
     # so Go to Definition and the other index features track the latest build.
     _daemon_send(root, {"cmd": "index"})
+    # Files saved or edited during the build now get their deferred lint, against fresh state.
+    _flush_deferred(root)
     summary = message.get("summary", {})
     errors, warnings = summary.get("errors", 0), summary.get("warnings", 0)
     started = _build_started.pop(_normcase(root), None)
@@ -347,11 +436,28 @@ def _apply_file_message(message):
     if "error" in message:
         _log("lint file failed ({}): {}".format(os.path.basename(path), message["error"]))
         return
+    # A saved definition-set change affects sibling files, which only a folder rebuild can
+    # re-report. Honoured even when the response is otherwise stale: the diff is against the
+    # file on disk, not the buffer.
+    if message.get("defs_changed") and _settings().get("auto_rebuild", True):
+        root = _root_for_path(path)
+        if root is not None:
+            _schedule_rebuild(root)
+    view = _view_for_path(path)
+    if (
+        view is not None
+        and view.is_valid()
+        and "id" in message
+        and view.change_count() != message["id"]
+    ):
+        # The buffer changed while this lint was in flight; its lines no longer match, and a
+        # newer (debounced) lint of the current content is already on its way.
+        _log("stale lint result dropped: " + os.path.basename(path))
+        return
     key = _normcase(path)
     own = [d for d in message.get("diagnostics", []) if _normcase(d["file"]) == key]
     with _lock:
         _diagnostics[key] = own
-    view = _view_for_path(path)
     if view is not None and view.is_valid():
         _render_view(view)
 
@@ -371,27 +477,77 @@ def _lint_folder_async(window, root):
     _daemon_send(root, {"cmd": "rebuild"})
 
 
+def _gate_lint(root, file_name):
+    """Whether to defer this file's lint because `root`'s cache is (re)building. A request
+    queued behind a build would be answered seconds late, against content the user has since
+    edited; deferring it re-lints once — against the fresh cache — when the build lands."""
+    if root is None or not _is_building(root):
+        return False
+    _defer_lint(root, file_name)
+    _log("lint deferred until the build completes: " + os.path.basename(file_name))
+    return True
+
+
+def _request_id(view):
+    """The staleness token sent with a lint request: the view's change count. The daemon
+    echoes it back, and `_apply_file_message` drops the response if the buffer has moved on."""
+    return view.change_count() if view is not None and view.is_valid() else None
+
+
 def _lint_file_async(view, root, file_name):
     """Re-lint a saved file against the daemon's cache (cross-file references resolve)."""
-    _daemon_send(
-        root or _project_root(view.window(), file_name),
-        {
-            "cmd": "lint_file",
-            "path": file_name,
-        },
-    )
+    if root is None and view is not None:
+        root = _project_root(view.window(), file_name)
+    if _gate_lint(root, file_name) or root is None:
+        return
+    command = {"cmd": "lint_file", "path": file_name}
+    request_id = _request_id(view)
+    if request_id is not None:
+        command["id"] = request_id
+    _daemon_send(root, command)
 
 
 def _lint_buffer_async(view, root, file_name, content):
     """Re-lint the live (unsaved) buffer against the daemon's cache."""
-    _daemon_send(
-        root or _project_root(view.window(), file_name),
-        {
-            "cmd": "lint_file",
-            "path": file_name,
-            "content": content,
-        },
-    )
+    if root is None:
+        root = _project_root(view.window(), file_name)
+    if _gate_lint(root, file_name) or root is None:
+        return
+    command = {"cmd": "lint_file", "path": file_name, "content": content}
+    request_id = _request_id(view)
+    if request_id is not None:
+        command["id"] = request_id
+    _daemon_send(root, command)
+
+
+def _root_for_path(path):
+    """The open project folder that contains `path`, or None (no first-folder fallback)."""
+    normalised = _normcase(path)
+    for window in sublime.windows():
+        for folder in window.folders():
+            if normalised.startswith(_normcase(folder) + os.sep):
+                return folder
+    return None
+
+
+def _schedule_rebuild(root):
+    """Rebuild `root`'s cache after a short debounce, so a burst of saves that change the
+    definition set costs one folder build, not one per save."""
+    key = _normcase(root)
+    with _state_lock:
+        token = _pending_rebuilds.get(key, 0) + 1
+        _pending_rebuilds[key] = token
+    delay = _settings().get("rebuild_delay_ms", 2500)
+    _log(f"definitions changed: folder re-lint in {delay} ms")
+
+    def fire():
+        with _state_lock:
+            if _pending_rebuilds.get(key) != token:
+                return
+            _pending_rebuilds.pop(key, None)
+        _daemon_send(root, {"cmd": "rebuild"})  # dropped if a build is already in flight
+
+    sublime.set_timeout_async(fire, delay)
 
 
 def _line_region(view, line_start):
@@ -410,15 +566,17 @@ def _line_region(view, line_start):
     return sublime.Region(region.a + indent, region.b)
 
 
-def _render_view(view):
-    file_name = view.file_name()
-    if not file_name:
-        return
-    diags = _diagnostics.get(_normcase(file_name), [])
+def _truncate(text):
+    if len(text) <= INLINE_MESSAGE_LIMIT:
+        return text
+    return text[: INLINE_MESSAGE_LIMIT - 1] + "…"
 
-    # Merge diagnostics that share a line+severity into one region, joining their messages,
-    # so a single annotation sits at the end of the line instead of several overlapping ones.
-    merged = {}  # (severity, line) -> [messages]
+
+def _merged_diagnostics(diags):
+    """Diagnostics grouped as `(severity, line) -> [messages]` — one region/message block per
+    line and severity, so several issues on a line render as one joined placement — plus the
+    file's error/warning counts for the status bar."""
+    merged = {}
     errors = warnings = 0
     for diag in diags:
         severity = diag.get("severity", "error")
@@ -430,6 +588,73 @@ def _render_view(view):
             continue
         message = "[{}] {}".format(diag["code"], diag["message"])
         merged.setdefault((severity, diag["line_start"]), []).append(message)
+    return merged, errors, warnings
+
+
+def _phantom_html(view, severity, messages, indent):
+    """One message per line, each wrapped in Python to the columns the viewport can show at
+    the line's indent — minihtml does not wrap a phantom itself, it would just widen the
+    layout and scroll out of view like the annotations did."""
+    color = SEVERITY_STYLE.get(severity, SEVERITY_STYLE["error"])[2]
+    em = view.em_width() or 8
+    columns = int(view.viewport_extent()[0] / em) - indent - 4
+    columns = max(columns, 40)  # a not-yet-laid-out or sliver-narrow view still gets sane wraps
+    lines = []
+    for message in messages:
+        lines.extend(textwrap.wrap(message, columns, subsequent_indent="  ") or [""])
+    padding = "&nbsp;" * indent  # align the message with the line's own indent
+    # minihtml collapses runs of spaces, which would flatten the continuation indent.
+    body = "<br>".join(padding + html.escape(line).replace("  ", "&nbsp;&nbsp;") for line in lines)
+    return (
+        f'<body id="sage-lint-inline"><style>div {{ color: {color}; font-style: italic; }}'
+        f"</style><div>{body}</div></body>"
+    )
+
+
+def _render_phantoms(view, merged):
+    """Draw each line's diagnostics as a phantom block on its own line below the code, so the
+    message stays visible at any horizontal scroll and any line length. With `phantom_scope`
+    "caret-line" only the caret's line gets one (error-lens style); "all" shows every line's."""
+    caret_only = _settings().get("phantom_scope", "all") == "caret-line"
+    caret_row = view.rowcol(view.sel()[0].b)[0] + 1 if view.sel() else 0
+    _last_caret_row[view.id()] = caret_row
+    phantoms = []
+    for severity, line in sorted(merged, key=lambda k: (k[1], SEVERITY_ORDER.get(k[0], 9))):
+        if caret_only and line != caret_row:
+            continue
+        region = _line_region(view, line)
+        if region is None:
+            continue
+        indent = region.a - view.line(region.a).a
+        anchor = sublime.Region(region.b, region.b)
+        phantoms.append(
+            sublime.Phantom(
+                anchor,
+                _phantom_html(view, severity, merged[(severity, line)], indent),
+                sublime.LAYOUT_BLOCK,
+            )
+        )
+    phantom_set = _phantom_sets.get(view.id())
+    if not phantoms:
+        if phantom_set is not None:
+            phantom_set.update([])
+        return
+    if phantom_set is None:
+        phantom_set = sublime.PhantomSet(view, "sage_lint")
+        _phantom_sets[view.id()] = phantom_set
+    phantom_set.update(phantoms)
+
+
+def _render_view(view):
+    file_name = view.file_name()
+    if not file_name:
+        return
+    diags = _diagnostics.get(_normcase(file_name), [])
+    merged, errors, warnings = _merged_diagnostics(diags)
+    # Where the message text goes: "phantom" (a line under the code — always visible),
+    # "annotation" (right-aligned inline, can sit past the viewport on long lines), or
+    # "none" (squiggle/gutter/status/hover only). The squiggle and gutter icon always draw.
+    display = _settings().get("diagnostic_display", "phantom")
 
     underline = sublime.DRAW_SQUIGGLY_UNDERLINE | sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE
     for severity, region_key in REGION_KEYS.items():
@@ -442,19 +667,20 @@ def _render_view(view):
             if region is None:
                 continue
             regions.append(region)
-            annotations.append("<body>{}</body>".format(html.escape(" | ".join(messages))))
-        if regions:
-            view.add_regions(
-                region_key,
-                regions,
-                scope=scope,
-                icon=icon,
-                flags=underline,
-                annotations=annotations,
-                annotation_color=color,
+            annotations.append(
+                "<body>{}</body>".format(html.escape(_truncate(" | ".join(messages))))
             )
+        if regions:
+            extra = (
+                {"annotations": annotations, "annotation_color": color}
+                if display == "annotation"
+                else {}
+            )
+            view.add_regions(region_key, regions, scope=scope, icon=icon, flags=underline, **extra)
         else:
             view.erase_regions(region_key)
+
+    _render_phantoms(view, merged if display == "phantom" else {})
 
     if errors or warnings:
         view.set_status(COUNT_STATUS, f"SAGE E:{errors} W:{warnings}")
@@ -1440,14 +1666,42 @@ class SageLintEventListener(sublime_plugin.EventListener):
         sublime.set_timeout_async(lambda: _maybe_lint_idle(view, vid, token), delay)
 
     def on_load_async(self, view):
-        # A view opened after the folder lint ran already has stored diagnostics to draw.
+        # A view opened after the folder lint ran already has stored diagnostics to draw; one
+        # opened mid-build gets the persistent build status its siblings already carry.
         _render_view(view)
+        window = view.window()
+        root = _project_root(window, view.file_name()) if window else None
+        if root is not None and _is_building(root):
+            view.set_status(BUILD_STATUS, "SAGE: building index…")
 
     def on_activated_async(self, view):
         _render_view(view)
 
+    def on_close(self, view):
+        _phantom_sets.pop(view.id(), None)
+        _pending_edits.pop(view.id(), None)
+        _last_caret_row.pop(view.id(), None)
+
     def on_selection_modified_async(self, view):
         _status_for_caret(view)
+        self._refresh_caret_phantoms(view)
+
+    @staticmethod
+    def _refresh_caret_phantoms(view):
+        """With `phantom_scope` "caret-line", the shown phantom follows the caret: redraw when
+        the caret changes row (and only then — `_render_phantoms` records the row it drew for)."""
+        if _settings().get("diagnostic_display", "phantom") != "phantom":
+            return
+        if _settings().get("phantom_scope", "all") != "caret-line":
+            return
+        file_name = view.file_name()
+        if not file_name:
+            return
+        row = view.rowcol(view.sel()[0].b)[0] + 1 if view.sel() else 0
+        if _last_caret_row.get(view.id()) == row:
+            return
+        merged, _errors, _warnings = _merged_diagnostics(_diagnostics.get(_normcase(file_name), []))
+        _render_phantoms(view, merged)
 
     def on_hover(self, view, point, hover_zone):
         if hover_zone not in (sublime.HOVER_TEXT, sublime.HOVER_GUTTER):

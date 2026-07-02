@@ -29,10 +29,21 @@ def _overrides_existing(game: Game, key: str, name: str) -> bool:
     return fallback is not None and fallback.lookup(key, name)[0] is not None
 
 
+def _createahero_injected(obj: object) -> bool:
+    """Whether this definition is a create-a-hero button: any `CreateAHeroUI*` field marks
+    one. The engine injects such buttons into a custom hero's command set at runtime, so no
+    command set in the data names them — a missing reverse edge is not "unused"."""
+    fields = getattr(obj, "fields", None)
+    if not isinstance(fields, dict):
+        return False
+    return any(field.lower().startswith("createaheroui") for field in fields)
+
+
 def _unused(game: Game, key: str) -> Iterator[tuple[object, str]]:
     """`(obj, name)` for each definition in table `key` that nothing in the game references.
-    A kind named in the `always_referenced` config, and a definition overriding one built
-    elsewhere, are skipped — both are reached in ways the in-memory reference graph cannot see."""
+    A kind named in the `always_referenced` config, a definition overriding one built
+    elsewhere, and a create-a-hero button are skipped — all are reached in ways the
+    in-memory reference graph cannot see."""
     always = always_referenced()
     xref = Xref.for_game(game)
     for obj in game.tables.get(key, {}).values():
@@ -42,6 +53,8 @@ def _unused(game: Game, key: str) -> Iterator[tuple[object, str]]:
         if type(obj).__name__.lower() in always or key in always:
             continue
         if _overrides_existing(game, key, name):
+            continue
+        if _createahero_injected(obj):
             continue
         if not xref.is_referenced(obj):
             yield obj, name
@@ -86,6 +99,9 @@ class UnusedDefinitionRule(Rule):
     their own off-by-default rule (`unused-object`), and the asset/audio tables are left to the
     asset checks (see `_UNUSED_DEFINITION_EXCLUDES`).
 
+    On a folder lint, a definition only a map.ini reaches is not reported: each map is built
+    as its own context after the global pass, and `build_cache` retracts any unused finding a
+    map build turns out to reference (a campaign map's command set naming a global button).
     A definition may still be reached from a binary `.map` script the ini graph cannot see, so
     this is a WARNING, not an error."""
 

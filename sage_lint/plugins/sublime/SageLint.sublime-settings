@@ -24,5 +24,24 @@
     "lint_on_idle": true,
 
     // Idle delay before an on-idle lint fires, in milliseconds.
-    "idle_delay_ms": 800
+    "idle_delay_ms": 800,
+
+    // Where a diagnostic's message text is drawn (the squiggle, gutter icon, status bar and
+    // hover always work):
+    //   "phantom"    — on its own line below the code; visible whatever the line length.
+    //   "annotation" — right-aligned inline; can sit past the viewport on long lines.
+    //   "none"       — no inline text.
+    "diagnostic_display": "phantom",
+
+    // Which lines get a phantom message: "all", or "caret-line" for only the line the
+    // caret is on (quieter while typing; the rest still squiggle).
+    "phantom_scope": "all",
+
+    // Rebuild the folder cache automatically (debounced) when a save adds or removes
+    // definitions or #defines, so new names resolve from sibling files and references to
+    // deleted ones re-flag without a manual Lint Folder.
+    "auto_rebuild": true,
+
+    // Debounce before such an automatic rebuild fires, in milliseconds.
+    "rebuild_delay_ms": 2500
 }
